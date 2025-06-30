@@ -2,8 +2,22 @@
 name = "shelby"
 version = "0.1.0"
 edition = "2024"
+resolver = "3"
+rust-version = "1.85.0"
 
 [dependencies]
 blake3 = "=1.8.2"
 rlnc = "=0.3.0"
 rand = "=0.9.1"
+
+[profile.optimized]
+inherits = "release"
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+
+[profile.test-release]
+inherits = "release"
+debug = true
+debug-assertions = true
+overflow-checks = true
