@@ -1,14 +1,6 @@
-[package]
-name = "shelby"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["shelby_client"]
 resolver = "3"
-rust-version = "1.85.0"
-
-[dependencies]
-blake3 = "=1.8.2"
-rlnc = "=0.3.0"
-rand = "=0.9.1"
 
 [profile.optimized]
 inherits = "release"
