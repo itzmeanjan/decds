@@ -6,7 +6,6 @@ use crate::{
 };
 use blake3;
 
-#[allow(dead_code)]
 /// Arbitrary size
 pub struct Blob {
     length: usize,

@@ -6,6 +6,9 @@ resolver = "3"
 rust-version = "1.85.0"
 
 [dependencies]
-blake3 = "=1.8.2"
+blake3 = { version = "=1.8.2", features = ["serde"] }
 rlnc = "=0.3.0"
 rand = "=0.9.1"
+serde = { version = "=1.0.219", features = ["derive"] }
+bincode = { version = "=2.0.1", features = ["serde"] }
+shelby_protobuf = { version = "=0.1.0", path = "../shelby_protobuf" }

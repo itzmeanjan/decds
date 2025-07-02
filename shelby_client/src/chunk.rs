@@ -1,7 +1,12 @@
-use crate::{chunkset::ChunkSet, merkle_tree::MerkleTree};
+use crate::{
+    chunkset::ChunkSet,
+    errors::{ShelbyError, bincode_error_mapper},
+    merkle_tree::MerkleTree,
+};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
 /// Fixed size = 1MB = 2^20 bytes
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub(crate) struct Chunk {
     chunk_id: usize,
     offset: usize,
@@ -28,13 +33,15 @@ impl Chunk {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ProofCarryingChunk {
     chunk: Chunk,
     proof: Vec<blake3::Hash>,
 }
 
 impl ProofCarryingChunk {
+    const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+
     pub(crate) fn new(chunk: Chunk, proof: Vec<blake3::Hash>) -> Self {
         assert_eq!(proof.len(), ChunkSet::PROOF_SIZE);
         Self { chunk, proof }
@@ -64,5 +71,25 @@ impl ProofCarryingChunk {
 
     pub(crate) fn append_proof_to_blob_root(&mut self, blob_proof: &[blake3::Hash]) {
         self.proof.extend_from_slice(blob_proof);
+    }
+
+    pub fn to_bytes(self) -> Result<Vec<u8>, ShelbyError> {
+        bincode::serde::encode_to_vec(self, Self::BINCODE_CONFIG).map_err(bincode_error_mapper)
+    }
+
+    pub fn from_bytes(bytes: &[u8], blob_commitment: blake3::Hash) -> Result<Self, ShelbyError> {
+        match bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, Self::BINCODE_CONFIG) {
+            Ok((chunk, n)) => {
+                if bytes.len() != n {
+                    return Err(ShelbyError::CatchAllError);
+                }
+                if !chunk.validate_inclusion_in_blob(blob_commitment) {
+                    return Err(ShelbyError::CatchAllError);
+                }
+
+                Ok(chunk)
+            }
+            Err(_) => Err(ShelbyError::CatchAllError),
+        }
     }
 }

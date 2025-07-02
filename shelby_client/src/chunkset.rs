@@ -4,8 +4,8 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 
+/// Fixed size = 10MB = 10 * 2^20 byte
 #[derive(Clone)]
-/// Fixed size = 10MB = 10 * 2^20 bytes
 pub struct ChunkSet {
     offset: usize,
     chunkset_id: usize,
