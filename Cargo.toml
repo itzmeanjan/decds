@@ -1,5 +1,5 @@
 [workspace]
-members = ["shelby_client", "shelby_node"]
+members = ["shelby_client", "shelby_node", "shelby_protobuf"]
 resolver = "3"
 
 [profile.optimized]
