@@ -16,7 +16,7 @@ pub struct Blob {
 
 impl Blob {
     pub fn new(mut data: Vec<u8>) -> Result<Self, ShelbyError> {
-        if data.len() == 0 {
+        if data.is_empty() {
             return Err(ShelbyError::CatchAllError);
         }
 
@@ -101,7 +101,7 @@ impl Blob {
 
 #[cfg(test)]
 mod tests {
-    use crate::{blob::Blob, chunkset::ChunkSet};
+    use crate::{blob::Blob, chunk::ProofCarryingChunk, chunkset::ChunkSet};
     use rand::Rng;
 
     #[test]
@@ -129,6 +129,12 @@ mod tests {
 
                 assert!(chunk.validate_inclusion_in_blob(blob_commitment));
                 assert!(chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment()));
+
+                let chunk_as_bytes = chunk.to_bytes().expect("Must be able to encode proof-carrying chunk");
+                let decoded_chunk = ProofCarryingChunk::from_bytes(&chunk_as_bytes, blob_commitment).expect("Must be able to decode proof-carrying chunk");
+
+                assert!(decoded_chunk.validate_inclusion_in_blob(blob_commitment));
+                assert!(decoded_chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment()));
             });
         });
     }

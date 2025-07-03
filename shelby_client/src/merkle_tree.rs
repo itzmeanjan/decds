@@ -20,7 +20,7 @@ impl MerkleTree {
 
             while !current_level.is_empty() {
                 let left = unsafe { current_level.pop_front().unwrap_unchecked() };
-                let right = current_level.pop_front().unwrap_or_else(|| zero_hash);
+                let right = current_level.pop_front().unwrap_or(zero_hash);
 
                 let parent = Self::parent_hash(left.as_bytes(), right.as_bytes());
                 parent_level.push_back(parent);
@@ -61,7 +61,7 @@ impl MerkleTree {
 
             while i < current_level.len() {
                 let left = current_level[i];
-                let right = *current_level.get(i + 1).unwrap_or_else(|| &zero_hash);
+                let right = *current_level.get(i + 1).unwrap_or(&zero_hash);
                 let parent = Self::parent_hash(left.as_bytes(), right.as_bytes());
 
                 if current_index == i {

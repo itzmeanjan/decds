@@ -6,6 +6,7 @@ pub enum ShelbyError {
 }
 
 impl std::fmt::Display for ShelbyError {
+    #[allow(clippy::match_single_binding)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             _ => write!(f, "something went wrong !"),

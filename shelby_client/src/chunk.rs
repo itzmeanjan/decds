@@ -73,7 +73,7 @@ impl ProofCarryingChunk {
         self.proof.extend_from_slice(blob_proof);
     }
 
-    pub fn to_bytes(self) -> Result<Vec<u8>, ShelbyError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ShelbyError> {
         bincode::serde::encode_to_vec(self, Self::BINCODE_CONFIG).map_err(bincode_error_mapper)
     }
 
