@@ -11,4 +11,3 @@ rlnc = "=0.3.0"
 rand = "=0.9.1"
 serde = { version = "=1.0.219", features = ["derive"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
-shelby_protobuf = { version = "=0.1.0", path = "../shelby_protobuf" }
