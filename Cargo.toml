@@ -12,6 +12,9 @@ rand = "=0.9.1"
 serde = { version = "=1.0.219", features = ["derive"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
 
+[dev-dependencies]
+divan = "=0.1.21"
+
 [profile.optimized]
 inherits = "release"
 codegen-units = 1
@@ -23,3 +26,7 @@ inherits = "release"
 debug = true
 debug-assertions = true
 overflow-checks = true
+
+[[bench]]
+name = "build_blob"
+harness = false
