@@ -18,6 +18,10 @@ format: ## Formats source tree
 test: ## Run all tests
 	RUST_BACKTRACE=1 cargo test --profile test-release
 
+.PHONY: bench
+bench: ## Run all benchmarks
+	cargo bench --profile optimized
+
 .PHONY: coverage
 coverage: ## Generates HTML code coverage report, using `cargo-tarpaulin`
 	cargo tarpaulin -t 600 --profile test-release --out Html
