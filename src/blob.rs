@@ -6,8 +6,8 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 use blake3;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::mem::ManuallyDrop;
 
 /// Arbitrary size
 pub struct Blob {
@@ -39,37 +39,21 @@ impl Blob {
         let zero_padded_blob_len = num_chunksets * chunkset::ChunkSet::SIZE;
         data.resize(zero_padded_blob_len, 0);
 
-        let mut chunksets = Vec::with_capacity(num_chunksets);
+        let mut chunksets = (0..num_chunksets)
+            .into_par_iter()
+            .map(|chunkset_id| {
+                let offset = chunkset_id * chunkset::ChunkSet::SIZE;
+                let till = offset + chunkset::ChunkSet::SIZE;
 
-        if num_chunksets == 1 {
-            let chunkset = chunkset::ChunkSet::new(0, 0, data)?;
-            chunksets.push(chunkset);
-        } else {
-            unsafe {
-                let mut data = ManuallyDrop::new(data);
-
-                let mut offset = 0;
-                let data_ptr = data.as_mut_ptr();
-
-                while offset < zero_padded_blob_len {
-                    let chunkset_id = offset / chunkset::ChunkSet::SIZE;
-                    let sub_data = Vec::from_raw_parts(data_ptr.add(offset), chunkset::ChunkSet::SIZE, 0);
-
-                    let chunkset = chunkset::ChunkSet::new(offset, chunkset_id, sub_data)?;
-                    chunksets.push(chunkset);
-
-                    offset += chunkset::ChunkSet::SIZE;
-                }
-
-                let _ = ManuallyDrop::into_inner(data);
-            }
-        }
+                unsafe { chunkset::ChunkSet::new(offset, chunkset_id, data[offset..till].to_vec()).unwrap_unchecked() }
+            })
+            .collect::<Vec<chunkset::ChunkSet>>();
 
         let merkle_leaves = chunksets.iter().map(|chunkset| chunkset.get_root_commitment()).collect::<Vec<blake3::Hash>>();
         let merkle_tree = MerkleTree::new(merkle_leaves).ok_or(ShelbyError::CatchAllError)?;
         let commitment = merkle_tree.get_root_commitment();
 
-        chunksets.iter_mut().enumerate().for_each(|(chunkset_idx, chunkset)| {
+        chunksets.par_iter_mut().enumerate().for_each(|(chunkset_idx, chunkset)| {
             let blob_proof = unsafe { merkle_tree.generate_proof(chunkset_idx).unwrap_unchecked() };
             chunkset.append_blob_inclusion_proof(&blob_proof);
         });
