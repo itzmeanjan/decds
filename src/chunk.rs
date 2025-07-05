@@ -1,5 +1,6 @@
 use crate::{
     chunkset::ChunkSet,
+    consts::DECDS_BINCODE_CONFIG,
     errors::{ShelbyError, bincode_error_mapper},
     merkle_tree::MerkleTree,
 };
@@ -40,8 +41,6 @@ pub struct ProofCarryingChunk {
 }
 
 impl ProofCarryingChunk {
-    const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
-
     pub(crate) fn new(chunk: Chunk, proof: Vec<blake3::Hash>) -> Self {
         assert_eq!(proof.len(), ChunkSet::PROOF_SIZE);
         Self { chunk, proof }
@@ -74,11 +73,11 @@ impl ProofCarryingChunk {
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ShelbyError> {
-        bincode::serde::encode_to_vec(self, Self::BINCODE_CONFIG).map_err(bincode_error_mapper)
+        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
     }
 
     pub fn from_bytes(bytes: &[u8], blob_commitment: blake3::Hash) -> Result<Self, ShelbyError> {
-        match bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, Self::BINCODE_CONFIG) {
+        match bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG) {
             Ok((chunk, n)) => {
                 if bytes.len() != n {
                     return Err(ShelbyError::CatchAllError);

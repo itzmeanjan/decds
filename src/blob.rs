@@ -1,10 +1,12 @@
 use crate::{
     chunk,
     chunkset::{self, ChunkSet},
-    errors::ShelbyError,
+    consts::DECDS_BINCODE_CONFIG,
+    errors::{ShelbyError, bincode_error_mapper},
     merkle_tree::MerkleTree,
 };
 use blake3;
+use serde::{Deserialize, Serialize};
 
 /// Arbitrary size
 pub struct Blob {
@@ -12,6 +14,15 @@ pub struct Blob {
     commitment: blake3::Hash,
     digest: blake3::Hash,
     chunksets: Vec<chunkset::ChunkSet>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct BlobHeader {
+    byte_length: usize,
+    root_commitment: blake3::Hash,
+    digest: blake3::Hash,
+    num_chunksets: usize,
+    chunkset_root_commitments: Vec<blake3::Hash>,
 }
 
 impl Blob {
@@ -96,6 +107,22 @@ impl Blob {
 
             self.chunksets[chunkset_id].get_chunk(local_chunk_id)
         }
+    }
+
+    pub fn get_blob_header(&self) -> Result<Vec<u8>, ShelbyError> {
+        let header = BlobHeader {
+            byte_length: self.get_blob_size(),
+            root_commitment: self.get_root_commitment(),
+            digest: self.get_blob_digest(),
+            num_chunksets: self.get_num_chunksets(),
+            chunkset_root_commitments: self
+                .chunksets
+                .iter()
+                .map(|chunkset| chunkset.get_root_commitment())
+                .collect::<Vec<blake3::Hash>>(),
+        };
+
+        bincode::serde::encode_to_vec(header, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
     }
 }
 
