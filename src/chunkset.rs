@@ -1,5 +1,5 @@
 use crate::{
-    chunk,
+    chunk::{self, Chunk},
     errors::{ShelbyError, rlnc_error_mapper},
     merkle_tree::MerkleTree,
 };
@@ -12,7 +12,7 @@ pub(crate) struct ChunkSet {
 }
 
 impl ChunkSet {
-    pub const SIZE: usize = 10 * (1usize << 20); // 10MB
+    pub const SIZE: usize = 10 * Chunk::SIZE; // 10MB
     pub const NUM_ORIGINAL_CHUNKS: usize = 10;
     pub const NUM_ERASURE_CODED_CHUNKS: usize = 16;
     pub const PROOF_SIZE: usize = usize::ilog2(Self::NUM_ERASURE_CODED_CHUNKS) as usize; // These many 32 bytes BLAKE3 digests
@@ -74,6 +74,7 @@ impl ChunkSet {
 }
 
 pub struct RepairingChunkSet {
+    chunkset_id: usize,
     commitment: blake3::Hash,
     decoder: rlnc::full::decoder::Decoder,
 }
@@ -81,12 +82,20 @@ pub struct RepairingChunkSet {
 impl RepairingChunkSet {
     const PADDED_CHUNK_BYTE_LEN: usize = (ChunkSet::SIZE + 1).div_ceil(ChunkSet::NUM_ORIGINAL_CHUNKS);
 
-    pub fn new(commitment: blake3::Hash) -> Self {
+    pub fn new(chunkset_id: usize, commitment: blake3::Hash) -> Self {
         let decoder = unsafe { rlnc::full::decoder::Decoder::new(Self::PADDED_CHUNK_BYTE_LEN, ChunkSet::NUM_ORIGINAL_CHUNKS).unwrap_unchecked() };
-        RepairingChunkSet { commitment, decoder }
+        RepairingChunkSet {
+            chunkset_id,
+            commitment,
+            decoder,
+        }
     }
 
     pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), ShelbyError> {
+        if self.chunkset_id != chunk.get_chunkset_id() {
+            return Err(ShelbyError::CatchAllError);
+        }
+
         let is_valid = chunk.validate_inclusion_in_chunkset(self.commitment);
         if !is_valid {
             return Err(ShelbyError::CatchAllError);
@@ -142,7 +151,7 @@ mod tests {
             let data_copy = data.clone();
 
             let chunkset = ChunkSet::new(0, 0, data).expect("Must be able to build erasure-coded ChunkSet");
-            let mut repairing_chunkset = RepairingChunkSet::new(chunkset.get_root_commitment());
+            let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
             let mut chunks = (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
                 .map(|i| chunkset.get_chunk(i).expect("Must be able to lookup chunk by id"))

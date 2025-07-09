@@ -17,6 +17,8 @@ pub(crate) struct Chunk {
 }
 
 impl Chunk {
+    pub const SIZE: usize = 1usize << 20;
+
     pub fn new(chunkset_id: usize, chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>, chunkset_digest: blake3::Hash) -> Self {
         Chunk {
             chunkset_id,
@@ -82,18 +84,9 @@ impl ProofCarryingChunk {
         bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
     }
 
-    pub fn from_bytes(bytes: &[u8], blob_commitment: blake3::Hash) -> Result<Self, ShelbyError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), ShelbyError> {
         match bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG) {
-            Ok((chunk, n)) => {
-                if bytes.len() != n {
-                    return Err(ShelbyError::CatchAllError);
-                }
-                if !chunk.validate_inclusion_in_blob(blob_commitment) {
-                    return Err(ShelbyError::CatchAllError);
-                }
-
-                Ok(chunk)
-            }
+            Ok((chunk, n)) => Ok((chunk, n)),
             Err(_) => Err(ShelbyError::CatchAllError),
         }
     }
