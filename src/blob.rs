@@ -242,25 +242,27 @@ impl RepairingBlob {
         }
     }
 
-    pub fn repair_full(mut self, chunks: &[ProofCarryingChunk]) -> Result<Vec<u8>, ShelbyError> {
+    pub fn repair_full(header: BlobHeader, chunks: &[ProofCarryingChunk]) -> Result<Vec<u8>, ShelbyError> {
+        let mut repairer = RepairingBlob::new(header);
+
         for chunk in chunks {
-            self.add_chunk(chunk)?;
+            repairer.add_chunk(chunk)?;
         }
 
-        let is_fully_repaired = self.body.values().all(|v| v.as_ref().unwrap().is_ready_to_repair());
+        let is_fully_repaired = repairer.body.values().all(|v| v.as_ref().unwrap().is_ready_to_repair());
         if !is_fully_repaired {
             return Err(ShelbyError::CatchAllError);
         }
 
         let mut res = Vec::new();
-        for chunkset_id in 0..self.header.num_chunksets {
-            res.extend(self.get_repaired_chunkset(chunkset_id)?);
+        for chunkset_id in 0..repairer.header.num_chunksets {
+            res.extend(repairer.get_repaired_chunkset(chunkset_id)?);
         }
 
-        if res.len() != self.header.get_blob_size() {
+        if res.len() != repairer.header.get_blob_size() {
             return Err(ShelbyError::CatchAllError);
         }
-        if blake3::hash(&res) != self.header.get_blob_digest() {
+        if blake3::hash(&res) != repairer.header.get_blob_digest() {
             return Err(ShelbyError::CatchAllError);
         }
 

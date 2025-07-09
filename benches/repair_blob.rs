@@ -1,4 +1,4 @@
-use decds::Blob;
+use decds::{Blob, RepairingBlob};
 use rand::Rng;
 use std::{fmt::Debug, time::Duration};
 
@@ -28,10 +28,7 @@ fn bytes_to_human_readable(bytes: usize) -> String {
 
 impl Debug for BlobConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!(
-            "Erasure code + Generate Merkle proof for {} blob",
-            &bytes_to_human_readable(self.data_byte_len),
-        ))
+        f.write_str(&format!("Verify + Repair Erasure Coded {} blob", &bytes_to_human_readable(self.data_byte_len),))
     }
 }
 
@@ -44,12 +41,15 @@ const ARGS: &[BlobConfig] = &[
 ];
 
 #[divan::bench(args = ARGS, max_time = Duration::from_secs(100), skip_ext_time = true)]
-fn build_blob(bencher: divan::Bencher, rlnc_config: &BlobConfig) {
+fn repair_blob(bencher: divan::Bencher, rlnc_config: &BlobConfig) {
     bencher
         .with_inputs(|| {
             let mut rng = rand::rng();
-            (0..rlnc_config.data_byte_len).map(|_| rng.random()).collect::<Vec<u8>>()
+            let data = (0..rlnc_config.data_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+            let blob = unsafe { Blob::new(data).unwrap_unchecked() };
+
+            (blob.get_blob_header().to_owned(), blob.get_share())
         })
-        .input_counter(|data| divan::counter::BytesCount::new(data.len()))
-        .bench_values(|data| divan::black_box(Blob::new(divan::black_box(data))));
+        .input_counter(|(header, _)| divan::counter::BytesCount::new(header.get_blob_size()))
+        .bench_values(|(header, chunks)| divan::black_box(RepairingBlob::repair_full(divan::black_box(header), divan::black_box(&chunks))));
 }
