@@ -9,6 +9,7 @@ use blake3;
 use rand::Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::ops::RangeBounds;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct BlobHeader {
@@ -20,6 +21,74 @@ pub struct BlobHeader {
 }
 
 impl BlobHeader {
+    pub fn get_root_commitment(&self) -> blake3::Hash {
+        self.root_commitment
+    }
+
+    pub fn get_blob_digest(&self) -> blake3::Hash {
+        self.digest
+    }
+
+    pub fn get_blob_size(&self) -> usize {
+        self.byte_length
+    }
+
+    pub fn get_num_chunksets(&self) -> usize {
+        self.num_chunksets
+    }
+
+    pub fn get_num_chunks(&self) -> usize {
+        self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
+    }
+
+    pub fn get_chunkset_commitment(&self, chunkset_id: usize) -> Result<blake3::Hash, ShelbyError> {
+        if chunkset_id < self.get_num_chunksets() {
+            Ok(self.chunkset_root_commitments[chunkset_id])
+        } else {
+            Err(ShelbyError::CatchAllError)
+        }
+    }
+
+    pub fn get_byte_range_for_chunkset(&self, chunkset_id: usize) -> Result<(usize, usize), ShelbyError> {
+        if chunkset_id < self.get_num_chunksets() {
+            let from = chunkset_id * ChunkSet::SIZE;
+            let to = from + ChunkSet::SIZE;
+
+            Ok((from, to))
+        } else {
+            Err(ShelbyError::CatchAllError)
+        }
+    }
+
+    pub fn get_chunkset_ids_for_byte_range(&self, byte_range: impl RangeBounds<usize>) -> Result<Vec<usize>, ShelbyError> {
+        let start = match byte_range.start_bound() {
+            std::ops::Bound::Unbounded => 0,
+            std::ops::Bound::Included(&x) => x,
+            _ => return Err(ShelbyError::CatchAllError),
+        };
+
+        let end = match byte_range.end_bound() {
+            std::ops::Bound::Included(&x) => x,
+            std::ops::Bound::Excluded(&x) => {
+                if x == 0 {
+                    return Err(ShelbyError::CatchAllError);
+                }
+
+                x - 1
+            }
+            _ => return Err(ShelbyError::CatchAllError),
+        };
+
+        let start_chunkset_id = start / ChunkSet::SIZE;
+        let end_chunkset_id = end / ChunkSet::SIZE;
+
+        if end_chunkset_id >= self.get_num_chunksets() {
+            return Err(ShelbyError::CatchAllError);
+        }
+
+        Ok((start_chunkset_id..=end_chunkset_id).collect())
+    }
+
     pub fn as_bytes(&self) -> Result<Vec<u8>, ShelbyError> {
         bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
     }
@@ -38,6 +107,12 @@ impl BlobHeader {
             }
             Err(_) => Err(ShelbyError::CatchAllError),
         }
+    }
+
+    pub fn validate_chunk(&self, chunk: &chunk::ProofCarryingChunk) -> bool {
+        chunk.validate_inclusion_in_blob(self.root_commitment)
+            && (chunk.get_chunkset_id() < self.num_chunksets)
+            && chunk.validate_inclusion_in_chunkset(self.chunkset_root_commitments[chunk.get_chunkset_id()])
     }
 }
 
@@ -88,45 +163,6 @@ impl Blob {
             },
             body: chunksets,
         })
-    }
-
-    pub fn get_root_commitment(&self) -> blake3::Hash {
-        self.header.root_commitment
-    }
-
-    pub fn get_blob_digest(&self) -> blake3::Hash {
-        self.header.digest
-    }
-
-    pub fn get_blob_size(&self) -> usize {
-        self.header.byte_length
-    }
-
-    pub fn get_num_chunksets(&self) -> usize {
-        self.header.num_chunksets
-    }
-
-    pub fn get_num_chunks(&self) -> usize {
-        self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
-    }
-
-    fn get_chunkset(&self, chunkset_id: usize) -> Result<&chunkset::ChunkSet, ShelbyError> {
-        if chunkset_id > self.get_num_chunksets() {
-            Err(ShelbyError::CatchAllError)
-        } else {
-            Ok(&self.body[chunkset_id])
-        }
-    }
-
-    pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, ShelbyError> {
-        if chunk_id > self.get_num_chunks() {
-            Err(ShelbyError::CatchAllError)
-        } else {
-            let chunkset_id = chunk_id / ChunkSet::NUM_ERASURE_CODED_CHUNKS;
-            let local_chunk_id = chunk_id % ChunkSet::NUM_ERASURE_CODED_CHUNKS;
-
-            self.body[chunkset_id].get_chunk(local_chunk_id)
-        }
     }
 
     pub fn get_blob_header(&self) -> &BlobHeader {
