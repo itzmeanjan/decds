@@ -9,21 +9,40 @@ use blake3;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Arbitrary size
-pub struct Blob {
-    length: usize,
-    commitment: blake3::Hash,
-    digest: blake3::Hash,
-    chunksets: Vec<chunkset::ChunkSet>,
-}
-
 #[derive(Clone, Serialize, Deserialize, Debug)]
-struct BlobHeader {
+pub struct BlobHeader {
     byte_length: usize,
     root_commitment: blake3::Hash,
     digest: blake3::Hash,
     num_chunksets: usize,
     chunkset_root_commitments: Vec<blake3::Hash>,
+}
+
+impl BlobHeader {
+    pub fn as_bytes(&self) -> Result<Vec<u8>, ShelbyError> {
+        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ShelbyError> {
+        match bincode::serde::decode_from_slice::<BlobHeader, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG) {
+            Ok((header, n)) => {
+                if bytes.len() != n {
+                    return Err(ShelbyError::CatchAllError);
+                }
+                if header.num_chunksets != header.chunkset_root_commitments.len() {
+                    return Err(ShelbyError::CatchAllError);
+                }
+
+                Ok(header)
+            }
+            Err(_) => Err(ShelbyError::CatchAllError),
+        }
+    }
+}
+
+pub struct Blob {
+    header: BlobHeader,
+    body: Vec<chunkset::ChunkSet>,
 }
 
 impl Blob {
@@ -59,27 +78,31 @@ impl Blob {
         });
 
         Ok(Blob {
-            length: blob_length,
-            commitment,
-            digest: blob_digest,
-            chunksets,
+            header: BlobHeader {
+                byte_length: blob_length,
+                root_commitment: commitment,
+                digest: blob_digest,
+                num_chunksets: num_chunksets,
+                chunkset_root_commitments: chunksets.iter().map(|chunkset| chunkset.get_root_commitment()).collect(),
+            },
+            body: chunksets,
         })
     }
 
     pub fn get_root_commitment(&self) -> blake3::Hash {
-        self.commitment
+        self.header.root_commitment
     }
 
     pub fn get_blob_digest(&self) -> blake3::Hash {
-        self.digest
+        self.header.digest
     }
 
     pub fn get_blob_size(&self) -> usize {
-        self.length
+        self.header.byte_length
     }
 
     pub fn get_num_chunksets(&self) -> usize {
-        self.length.div_ceil(chunkset::ChunkSet::SIZE)
+        self.header.num_chunksets
     }
 
     pub fn get_num_chunks(&self) -> usize {
@@ -87,12 +110,10 @@ impl Blob {
     }
 
     pub fn get_chunkset(&self, chunkset_id: usize) -> Result<&chunkset::ChunkSet, ShelbyError> {
-        let num_chunksets = self.length.div_ceil(chunkset::ChunkSet::SIZE);
-
-        if chunkset_id > num_chunksets {
+        if chunkset_id > self.get_num_chunksets() {
             Err(ShelbyError::CatchAllError)
         } else {
-            Ok(&self.chunksets[chunkset_id])
+            Ok(&self.body[chunkset_id])
         }
     }
 
@@ -103,24 +124,12 @@ impl Blob {
             let chunkset_id = chunk_id / ChunkSet::NUM_ERASURE_CODED_CHUNKS;
             let local_chunk_id = chunk_id % ChunkSet::NUM_ERASURE_CODED_CHUNKS;
 
-            self.chunksets[chunkset_id].get_chunk(local_chunk_id)
+            self.body[chunkset_id].get_chunk(local_chunk_id)
         }
     }
 
-    pub fn get_blob_header(&self) -> Result<Vec<u8>, ShelbyError> {
-        let header = BlobHeader {
-            byte_length: self.get_blob_size(),
-            root_commitment: self.get_root_commitment(),
-            digest: self.get_blob_digest(),
-            num_chunksets: self.get_num_chunksets(),
-            chunkset_root_commitments: self
-                .chunksets
-                .iter()
-                .map(|chunkset| chunkset.get_root_commitment())
-                .collect::<Vec<blake3::Hash>>(),
-        };
-
-        bincode::serde::encode_to_vec(header, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
+    pub fn get_blob_header(&self) -> &BlobHeader {
+        &self.header
     }
 }
 
