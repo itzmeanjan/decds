@@ -1,4 +1,5 @@
 use crate::{
+    RepairingChunkSet,
     chunk::{self, ProofCarryingChunk},
     chunkset::{self, ChunkSet},
     consts::DECDS_BINCODE_CONFIG,
@@ -9,7 +10,7 @@ use blake3;
 use rand::Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::ops::RangeBounds;
+use std::{collections::HashMap, ops::RangeBounds};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct BlobHeader {
@@ -184,6 +185,61 @@ impl Blob {
                     .collect::<Vec<ProofCarryingChunk>>()
             })
             .collect::<Vec<ProofCarryingChunk>>()
+    }
+}
+
+pub struct RepairingBlob {
+    header: BlobHeader,
+    body: HashMap<usize, Option<chunkset::RepairingChunkSet>>,
+}
+
+impl RepairingBlob {
+    pub fn new(header: BlobHeader) -> Self {
+        RepairingBlob {
+            body: HashMap::from_iter((0..header.get_num_chunksets()).map(|chunkset_id| {
+                (
+                    chunkset_id,
+                    Some(RepairingChunkSet::new(chunkset_id, header.get_chunkset_commitment(chunkset_id).unwrap())),
+                )
+            })),
+            header: header,
+        }
+    }
+
+    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), ShelbyError> {
+        let chunkset_id = chunk.get_chunkset_id();
+
+        match self.body.get_mut(&chunkset_id).ok_or(ShelbyError::CatchAllError)? {
+            Some(chunkset) => {
+                if self.header.validate_chunk(chunk) {
+                    if !chunkset.is_ready_to_repair() {
+                        chunkset.add_chunk_unvalidated(chunk)
+                    } else {
+                        Err(ShelbyError::CatchAllError)
+                    }
+                } else {
+                    Err(ShelbyError::CatchAllError)
+                }
+            }
+            None => Err(ShelbyError::CatchAllError),
+        }
+    }
+
+    pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, ShelbyError> {
+        if chunkset_id >= self.header.get_num_chunksets() {
+            Err(ShelbyError::CatchAllError)
+        } else if let Some(chunkset) = &self.body[&chunkset_id] {
+            if !chunkset.is_ready_to_repair() {
+                Err(ShelbyError::CatchAllError)
+            } else {
+                let chunkset = unsafe { self.body.remove(&chunkset_id).ok_or(ShelbyError::CatchAllError)?.unwrap_unchecked() };
+                self.body.insert(chunkset_id, None);
+
+                chunkset.repair()
+            }
+        } else {
+            Err(ShelbyError::CatchAllError)
+        }
     }
 }
 
