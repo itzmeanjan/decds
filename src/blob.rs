@@ -7,7 +7,6 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 use blake3;
-use rand::seq::IteratorRandom;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::RangeBounds};
@@ -170,20 +169,17 @@ impl Blob {
         &self.header
     }
 
-    pub fn get_share(&self) -> Vec<ProofCarryingChunk> {
-        let mut rng = rand::rng();
+    pub fn get_share(&self, share_id: usize) -> Result<Vec<ProofCarryingChunk>, ShelbyError> {
+        if share_id >= ChunkSet::NUM_ERASURE_CODED_CHUNKS {
+            return Err(ShelbyError::CatchAllError);
+        }
 
-        (0..self.header.num_chunksets)
-            .flat_map(|chunkset_id| {
+        Ok((0..self.header.num_chunksets)
+            .map(|chunkset_id| unsafe {
                 let chunkset = &self.body[chunkset_id];
-
-                (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
-                    .choose_multiple(&mut rng, ChunkSet::NUM_ORIGINAL_CHUNKS + 1)
-                    .iter()
-                    .map(|&chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
-                    .collect::<Vec<ProofCarryingChunk>>()
+                chunkset.get_chunk(share_id).unwrap_unchecked().clone()
             })
-            .collect::<Vec<ProofCarryingChunk>>()
+            .collect::<Vec<ProofCarryingChunk>>())
     }
 }
 
