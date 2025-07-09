@@ -7,7 +7,7 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 use blake3;
-use rand::Rng;
+use rand::seq::IteratorRandom;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::RangeBounds};
@@ -177,11 +177,10 @@ impl Blob {
             .flat_map(|chunkset_id| {
                 let chunkset = &self.body[chunkset_id];
 
-                (0..ChunkSet::NUM_ORIGINAL_CHUNKS)
-                    .map(|_| {
-                        let chunk_id = rng.random_range(0..ChunkSet::NUM_ERASURE_CODED_CHUNKS);
-                        unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }
-                    })
+                (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
+                    .choose_multiple(&mut rng, ChunkSet::NUM_ORIGINAL_CHUNKS + 1)
+                    .iter()
+                    .map(|&chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
                     .collect::<Vec<ProofCarryingChunk>>()
             })
             .collect::<Vec<ProofCarryingChunk>>()
@@ -225,48 +224,33 @@ impl RepairingBlob {
         }
     }
 
-    pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, ShelbyError> {
+    pub fn is_chunkset_ready_to_repair(&self, chunkset_id: usize) -> bool {
         if chunkset_id >= self.header.get_num_chunksets() {
-            Err(ShelbyError::CatchAllError)
+            false
         } else if let Some(chunkset) = &self.body[&chunkset_id] {
-            if !chunkset.is_ready_to_repair() {
-                Err(ShelbyError::CatchAllError)
-            } else {
-                let chunkset = unsafe { self.body.remove(&chunkset_id).ok_or(ShelbyError::CatchAllError)?.unwrap_unchecked() };
-                self.body.insert(chunkset_id, None);
-
-                chunkset.repair()
-            }
+            chunkset.is_ready_to_repair()
         } else {
-            Err(ShelbyError::CatchAllError)
+            false
         }
     }
 
-    pub fn repair_full(header: BlobHeader, chunks: &[ProofCarryingChunk]) -> Result<Vec<u8>, ShelbyError> {
-        let mut repairer = RepairingBlob::new(header);
-
-        for chunk in chunks {
-            repairer.add_chunk(chunk)?;
+    pub fn is_chunkset_already_repaired(&self, chunkset_id: usize) -> bool {
+        if chunkset_id >= self.header.get_num_chunksets() {
+            false
+        } else {
+            self.body[&chunkset_id].is_none()
         }
+    }
 
-        let is_fully_repaired = repairer.body.values().all(|v| v.as_ref().unwrap().is_ready_to_repair());
-        if !is_fully_repaired {
-            return Err(ShelbyError::CatchAllError);
-        }
+    pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, ShelbyError> {
+        if self.is_chunkset_ready_to_repair(chunkset_id) {
+            let chunkset = unsafe { self.body.remove(&chunkset_id).ok_or(ShelbyError::CatchAllError)?.unwrap_unchecked() };
+            self.body.insert(chunkset_id, None);
 
-        let mut res = Vec::new();
-        for chunkset_id in 0..repairer.header.num_chunksets {
-            res.extend(repairer.get_repaired_chunkset(chunkset_id)?);
+            chunkset.repair()
+        } else {
+            Err(ShelbyError::CatchAllError)
         }
-
-        if res.len() != repairer.header.get_blob_size() {
-            return Err(ShelbyError::CatchAllError);
-        }
-        if blake3::hash(&res) != repairer.header.get_blob_digest() {
-            return Err(ShelbyError::CatchAllError);
-        }
-
-        Ok(res)
     }
 }
 
