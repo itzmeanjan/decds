@@ -104,6 +104,14 @@ impl RepairingChunkSet {
         self.decoder.decode(chunk.get_erasure_coded_data()).map_err(rlnc_error_mapper)
     }
 
+    pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), ShelbyError> {
+        if self.chunkset_id != chunk.get_chunkset_id() {
+            return Err(ShelbyError::CatchAllError);
+        }
+
+        self.decoder.decode(chunk.get_erasure_coded_data()).map_err(rlnc_error_mapper)
+    }
+
     pub fn is_ready_to_repair(&self) -> bool {
         self.decoder.is_already_decoded()
     }
