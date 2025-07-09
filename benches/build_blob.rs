@@ -1,4 +1,4 @@
-use decds::blob::Blob;
+use decds::Blob;
 use rand::Rng;
 use std::{fmt::Debug, time::Duration};
 

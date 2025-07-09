@@ -1,6 +1,10 @@
-pub mod blob;
-pub mod chunk;
-pub mod chunkset;
+mod blob;
+mod chunk;
+mod chunkset;
 mod consts;
-pub mod errors;
-pub mod merkle_tree;
+mod errors;
+mod merkle_tree;
+
+pub use blob::{Blob, BlobHeader};
+pub use chunk::ProofCarryingChunk;
+pub use chunkset::RepairingChunkSet;
