@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Fixed size = 1MB = 2^20 bytes
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub(crate) struct Chunk {
+    chunkset_id: usize,
     chunk_id: usize,
     offset: usize,
     erasure_coded_data: Vec<u8>,
@@ -16,8 +17,9 @@ pub(crate) struct Chunk {
 }
 
 impl Chunk {
-    pub fn new(chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>, chunkset_digest: blake3::Hash) -> Self {
+    pub fn new(chunkset_id: usize, chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>, chunkset_digest: blake3::Hash) -> Self {
         Chunk {
+            chunkset_id,
             chunk_id,
             offset,
             erasure_coded_data,
@@ -58,6 +60,10 @@ impl ProofCarryingChunk {
         let leaf_node = self.chunk.digest();
 
         MerkleTree::verify_proof(leaf_index, leaf_node, &self.proof[..ChunkSet::PROOF_SIZE], chunkset_commitment)
+    }
+
+    pub fn get_chunkset_id(&self) -> usize {
+        self.chunk.chunkset_id
     }
 
     pub fn get_erasure_coded_data(&self) -> &[u8] {
