@@ -6,11 +6,8 @@ use crate::{
 
 /// Fixed size = 10MB = 10 * 2^20 byte
 #[derive(Clone)]
-pub struct ChunkSet {
-    offset: usize,
-    chunkset_id: usize,
+pub(crate) struct ChunkSet {
     commitment: blake3::Hash,
-    digest: blake3::Hash,
     chunks: Vec<chunk::ProofCarryingChunk>,
 }
 
@@ -33,7 +30,7 @@ impl ChunkSet {
             let chunk_id = chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS + i;
             let coded_piece = encoder.code(&mut rng);
 
-            let chunk = chunk::Chunk::new(chunk_id, offset, coded_piece, chunkset_digest);
+            let chunk = chunk::Chunk::new(chunkset_id, chunk_id, offset, coded_piece, chunkset_digest);
             chunks.push(chunk);
         }
 
@@ -52,35 +49,13 @@ impl ChunkSet {
             .collect::<Vec<chunk::ProofCarryingChunk>>();
 
         Ok(ChunkSet {
-            offset,
-            chunkset_id,
             commitment,
-            digest: chunkset_digest,
             chunks: proof_carrying_chunks,
         })
     }
 
     pub fn get_root_commitment(&self) -> blake3::Hash {
         self.commitment
-    }
-
-    pub fn get_chunkset_digest(&self) -> blake3::Hash {
-        self.digest
-    }
-
-    pub fn get_chunkset_id(&self) -> usize {
-        self.chunkset_id
-    }
-
-    pub fn get_chunk_id_range(&self) -> (usize, usize) {
-        let chunk_id_from = self.chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS;
-        let chunk_id_to = chunk_id_from + Self::NUM_ERASURE_CODED_CHUNKS;
-
-        (chunk_id_from, chunk_id_to)
-    }
-
-    pub fn get_blob_byte_range(&self) -> (usize, usize) {
-        (self.offset, self.offset + ChunkSet::SIZE)
     }
 
     pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, ShelbyError> {
@@ -91,7 +66,7 @@ impl ChunkSet {
         }
     }
 
-    pub(crate) fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
+    pub fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
         if !blob_proof.is_empty() {
             self.chunks.iter_mut().for_each(|chunk| chunk.append_proof_to_blob_root(blob_proof));
         }
