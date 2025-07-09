@@ -1,11 +1,12 @@
 use crate::{
-    chunk,
+    chunk::{self, ProofCarryingChunk},
     chunkset::{self, ChunkSet},
     consts::DECDS_BINCODE_CONFIG,
     errors::{ShelbyError, bincode_error_mapper},
     merkle_tree::MerkleTree,
 };
 use blake3;
+use rand::Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -109,7 +110,7 @@ impl Blob {
         self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
     }
 
-    pub fn get_chunkset(&self, chunkset_id: usize) -> Result<&chunkset::ChunkSet, ShelbyError> {
+    fn get_chunkset(&self, chunkset_id: usize) -> Result<&chunkset::ChunkSet, ShelbyError> {
         if chunkset_id > self.get_num_chunksets() {
             Err(ShelbyError::CatchAllError)
         } else {
@@ -130,6 +131,23 @@ impl Blob {
 
     pub fn get_blob_header(&self) -> &BlobHeader {
         &self.header
+    }
+
+    pub fn get_share(&self) -> Vec<ProofCarryingChunk> {
+        let mut rng = rand::rng();
+
+        (0..self.header.num_chunksets)
+            .flat_map(|chunkset_id| {
+                let chunkset = &self.body[chunkset_id];
+
+                (0..ChunkSet::NUM_ORIGINAL_CHUNKS)
+                    .map(|_| {
+                        let chunk_id = rng.random_range(0..ChunkSet::NUM_ERASURE_CODED_CHUNKS);
+                        unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }
+                    })
+                    .collect::<Vec<ProofCarryingChunk>>()
+            })
+            .collect::<Vec<ProofCarryingChunk>>()
     }
 }
 
