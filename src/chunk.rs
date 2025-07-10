@@ -1,9 +1,4 @@
-use crate::{
-    chunkset::ChunkSet,
-    consts::DECDS_BINCODE_CONFIG,
-    errors::{ShelbyError, bincode_error_mapper},
-    merkle_tree::MerkleTree,
-};
+use crate::{chunkset::ChunkSet, consts::DECDS_BINCODE_CONFIG, errors::DECDSError, merkle_tree::MerkleTree};
 use serde::{Deserialize, Serialize};
 
 /// Fixed size = 1MB = 2^20 bytes
@@ -80,14 +75,12 @@ impl ProofCarryingChunk {
         self.proof.extend_from_slice(blob_proof);
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ShelbyError> {
-        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(bincode_error_mapper)
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DECDSError> {
+        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(|err| DECDSError::ProofCarryingChunkSerializationFailed(err.to_string()))
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), ShelbyError> {
-        match bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG) {
-            Ok((chunk, n)) => Ok((chunk, n)),
-            Err(_) => Err(ShelbyError::CatchAllError),
-        }
+    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), DECDSError> {
+        bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG)
+            .map_err(|err| DECDSError::ProofCarryingChunkDeserializationFailed(err.to_string()))
     }
 }

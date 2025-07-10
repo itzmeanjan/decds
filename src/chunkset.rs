@@ -1,6 +1,7 @@
 use crate::{
     chunk::{self, Chunk},
-    errors::{ShelbyError, rlnc_error_mapper},
+    consts::DECDS_NUM_ERASURE_CODED_SHARES,
+    errors::DECDSError,
     merkle_tree::MerkleTree,
 };
 
@@ -14,38 +15,37 @@ pub(crate) struct ChunkSet {
 impl ChunkSet {
     pub const SIZE: usize = 10 * Chunk::SIZE; // 10MB
     pub const NUM_ORIGINAL_CHUNKS: usize = 10;
-    pub const NUM_ERASURE_CODED_CHUNKS: usize = 16;
+    pub const NUM_ERASURE_CODED_CHUNKS: usize = DECDS_NUM_ERASURE_CODED_SHARES;
     pub const PROOF_SIZE: usize = usize::ilog2(Self::NUM_ERASURE_CODED_CHUNKS) as usize; // These many 32 bytes BLAKE3 digests
 
-    pub fn new(offset: usize, chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, ShelbyError> {
-        assert_eq!(data.len(), Self::SIZE);
+    pub fn new(offset: usize, chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, DECDSError> {
+        if data.len() != Self::SIZE {
+            return Err(DECDSError::InvalidChunksetSize(data.len()));
+        }
 
         let chunkset_digest = blake3::hash(&data);
 
         let mut rng = rand::rng();
-        let encoder = rlnc::full::encoder::Encoder::new(data, Self::NUM_ORIGINAL_CHUNKS).map_err(rlnc_error_mapper)?;
+        let encoder = unsafe { rlnc::full::encoder::Encoder::new(data, Self::NUM_ORIGINAL_CHUNKS).unwrap_unchecked() };
 
-        let mut chunks = Vec::with_capacity(Self::NUM_ERASURE_CODED_CHUNKS);
-        for i in 0..Self::NUM_ERASURE_CODED_CHUNKS {
-            let chunk_id = chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS + i;
-            let coded_piece = encoder.code(&mut rng);
+        let chunks = (0..Self::NUM_ERASURE_CODED_CHUNKS)
+            .map(|i| {
+                let chunk_id = chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS + i;
+                let erasure_coded_data = encoder.code(&mut rng);
 
-            let chunk = chunk::Chunk::new(chunkset_id, chunk_id, offset, coded_piece, chunkset_digest);
-            chunks.push(chunk);
-        }
+                chunk::Chunk::new(chunkset_id, chunk_id, offset, erasure_coded_data, chunkset_digest)
+            })
+            .collect::<Vec<Chunk>>();
 
         let merkle_leaves = chunks.iter().map(|chunk| chunk.digest()).collect::<Vec<blake3::Hash>>();
-        let merkle_tree = MerkleTree::new(merkle_leaves).ok_or(ShelbyError::CatchAllError)?;
+        let merkle_tree = unsafe { MerkleTree::new(merkle_leaves).unwrap_unchecked() };
 
         let commitment = merkle_tree.get_root_commitment();
 
         let proof_carrying_chunks = chunks
             .into_iter()
             .enumerate()
-            .map(|(leaf_idx, chunk)| {
-                let proof = unsafe { merkle_tree.generate_proof(leaf_idx).unwrap_unchecked() };
-                chunk::ProofCarryingChunk::new(chunk, proof)
-            })
+            .map(|(leaf_idx, chunk)| chunk::ProofCarryingChunk::new(chunk, unsafe { merkle_tree.generate_proof(leaf_idx).unwrap_unchecked() }))
             .collect::<Vec<chunk::ProofCarryingChunk>>();
 
         Ok(ChunkSet {
@@ -58,12 +58,8 @@ impl ChunkSet {
         self.commitment
     }
 
-    pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, ShelbyError> {
-        if chunk_id > Self::NUM_ERASURE_CODED_CHUNKS {
-            Err(ShelbyError::CatchAllError)
-        } else {
-            Ok(&self.chunks[chunk_id])
-        }
+    pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, DECDSError> {
+        self.chunks.get(chunk_id).ok_or(DECDSError::InvalidErasureCodedShareId(chunk_id))
     }
 
     pub fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
@@ -83,41 +79,50 @@ impl RepairingChunkSet {
     const PADDED_CHUNK_BYTE_LEN: usize = (ChunkSet::SIZE + 1).div_ceil(ChunkSet::NUM_ORIGINAL_CHUNKS);
 
     pub fn new(chunkset_id: usize, commitment: blake3::Hash) -> Self {
-        let decoder = unsafe { rlnc::full::decoder::Decoder::new(Self::PADDED_CHUNK_BYTE_LEN, ChunkSet::NUM_ORIGINAL_CHUNKS).unwrap_unchecked() };
         RepairingChunkSet {
             chunkset_id,
             commitment,
-            decoder,
+            decoder: unsafe { rlnc::full::decoder::Decoder::new(Self::PADDED_CHUNK_BYTE_LEN, ChunkSet::NUM_ORIGINAL_CHUNKS).unwrap_unchecked() },
         }
     }
 
-    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), ShelbyError> {
+    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(ShelbyError::CatchAllError);
+            return Err(DECDSError::InvalidChunk(chunk.get_chunkset_id(), "Chunkset ID mismatch".to_string()));
         }
 
-        let is_valid = chunk.validate_inclusion_in_chunkset(self.commitment);
-        if !is_valid {
-            return Err(ShelbyError::CatchAllError);
+        if chunk.validate_inclusion_in_chunkset(self.commitment) {
+            self.add_chunk_unvalidated(chunk)
+        } else {
+            Err(DECDSError::InvalidChunk(
+                chunk.get_chunkset_id(),
+                "Verification of Proof of inclusion in chunkset failed".to_string(),
+            ))
         }
-
-        self.decoder.decode(chunk.get_erasure_coded_data()).map_err(rlnc_error_mapper)
     }
 
-    pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), ShelbyError> {
+    pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(ShelbyError::CatchAllError);
+            return Err(DECDSError::InvalidChunk(chunk.get_chunkset_id(), "Chunkset ID mismatch".to_string()));
         }
 
-        self.decoder.decode(chunk.get_erasure_coded_data()).map_err(rlnc_error_mapper)
+        self.decoder
+            .decode(chunk.get_erasure_coded_data())
+            .map_err(|err| DECDSError::InvalidChunk(chunk.get_chunkset_id(), format!("RLNC Decoding error: {}", err)))
     }
 
     pub fn is_ready_to_repair(&self) -> bool {
         self.decoder.is_already_decoded()
     }
 
-    pub fn repair(self) -> Result<Vec<u8>, ShelbyError> {
-        self.decoder.get_decoded_data().map_err(rlnc_error_mapper)
+    pub fn repair(self) -> Result<Vec<u8>, DECDSError> {
+        if self.is_ready_to_repair() {
+            self.decoder
+                .get_decoded_data()
+                .map_err(|err| DECDSError::ChunksetRepairingFailed(self.chunkset_id, format!("RLNC Decoding error: {}", err)))
+        } else {
+            Err(DECDSError::ChunksetNotYetReadyToRepair(self.chunkset_id))
+        }
     }
 }
 

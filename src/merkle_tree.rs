@@ -1,3 +1,4 @@
+use crate::errors::DECDSError;
 use blake3;
 use std::collections::VecDeque;
 
@@ -7,9 +8,9 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    pub fn new(leaf_nodes: Vec<blake3::Hash>) -> Option<Self> {
+    pub fn new(leaf_nodes: Vec<blake3::Hash>) -> Result<Self, DECDSError> {
         if leaf_nodes.is_empty() {
-            return None;
+            return Err(DECDSError::NoLeafNodesToBuildMerkleTreeOn);
         }
 
         let mut zero_hash = blake3::Hash::from_bytes([0u8; 32]);
@@ -30,7 +31,7 @@ impl MerkleTree {
             current_level = parent_level;
         }
 
-        Some(MerkleTree {
+        Ok(MerkleTree {
             root: unsafe { current_level.pop_front().unwrap_unchecked() },
             leaves: leaf_nodes,
         })
@@ -40,9 +41,9 @@ impl MerkleTree {
         self.root
     }
 
-    pub fn generate_proof(&self, leaf_index: usize) -> Option<Vec<blake3::Hash>> {
+    pub fn generate_proof(&self, leaf_index: usize) -> Result<Vec<blake3::Hash>, DECDSError> {
         if leaf_index >= self.leaves.len() {
-            return None;
+            return Err(DECDSError::InvalidLeafNodeIndex(leaf_index, self.leaves.len()));
         }
 
         let num_leaf_nodes = self.leaves.len();
@@ -80,7 +81,7 @@ impl MerkleTree {
             zero_hash = blake3::Hasher::new().update(zero_hash.as_bytes()).update(zero_hash.as_bytes()).finalize();
         }
 
-        Some(proof)
+        Ok(proof)
     }
 
     pub fn verify_proof(leaf_index: usize, leaf_node: blake3::Hash, proof: &[blake3::Hash], root_hash: blake3::Hash) -> bool {
@@ -107,7 +108,7 @@ impl MerkleTree {
 
 #[cfg(test)]
 mod tests {
-    use crate::merkle_tree::MerkleTree;
+    use crate::{errors::DECDSError, merkle_tree::MerkleTree};
     use rand::Rng;
 
     fn generate_random_leaf_hashes<R: Rng + ?Sized>(leaf_count: usize, rng: &mut R) -> Vec<blake3::Hash> {
@@ -178,7 +179,7 @@ mod tests {
     #[test]
     fn test_new_with_empty_leaf_nodes() {
         let leaf_nodes: Vec<blake3::Hash> = Vec::new();
-        assert!(MerkleTree::new(leaf_nodes).is_none());
+        assert!(MerkleTree::new(leaf_nodes).is_err());
     }
 
     #[test]
@@ -202,11 +203,12 @@ mod tests {
 
     #[test]
     fn test_generate_proof_out_of_bounds() {
-        let leaf_nodes = generate_random_leaf_hashes(5, &mut rand::rng());
+        let num_leaves = 5;
+        let leaf_nodes = generate_random_leaf_hashes(num_leaves, &mut rand::rng());
         let merkle_tree = MerkleTree::new(leaf_nodes).expect("Must be able to build Merkle Tree");
 
-        assert_eq!(merkle_tree.generate_proof(5), None);
-        assert_eq!(merkle_tree.generate_proof(100), None);
+        assert_eq!(merkle_tree.generate_proof(5), Err(DECDSError::InvalidLeafNodeIndex(5, num_leaves)));
+        assert_eq!(merkle_tree.generate_proof(100), Err(DECDSError::InvalidLeafNodeIndex(100, num_leaves)));
     }
 
     #[test]
