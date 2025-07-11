@@ -218,7 +218,7 @@ impl RepairingBlob {
                         Err(DECDSError::ChunksetReadyToRepair(chunkset_id))
                     }
                 } else {
-                    Err(DECDSError::InvalidChunk(chunkset_id, "Chunk proof validation failed".to_string()))
+                    Err(DECDSError::InvalidProofInChunk(chunkset_id))
                 }
             }
             None => Err(DECDSError::ChunksetAlreadyRepaired(chunkset_id)),

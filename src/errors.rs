@@ -20,7 +20,9 @@ pub enum DECDSError {
     InvalidErasureCodedShareId(usize),
     InvalidChunksetId(usize, usize),
     InvalidChunksetSize(usize),
-    InvalidChunk(usize, String),
+    InvalidChunkMetadata(usize),
+    InvalidProofInChunk(usize),
+    ChunkDecodingFailed(usize, String),
 
     NoLeafNodesToBuildMerkleTreeOn,
     InvalidLeafNodeIndex(usize, usize),
@@ -53,7 +55,9 @@ impl std::fmt::Display for DECDSError {
             ),
             DECDSError::InvalidChunksetId(id, num_chunksets) => write!(f, "invalid chunkset id: {} (num_chunksets: {})", id, num_chunksets),
             DECDSError::InvalidChunksetSize(size) => write!(f, "invalid chunkset size: {}B, expected: {}B", size, ChunkSet::SIZE),
-            DECDSError::InvalidChunk(chunkset_id, err) => write!(f, "invalid chunk for chunkset {}: {}", chunkset_id, err),
+            DECDSError::InvalidChunkMetadata(chunkset_id) => write!(f, "invalid chunk for chunkset {}", chunkset_id),
+            DECDSError::InvalidProofInChunk(chunkset_id) => write!(f, "invalid proof carrying chunk for chunkset {}", chunkset_id),
+            DECDSError::ChunkDecodingFailed(chunkset_id, err) => write!(f, "decoding chunk for chunkset {} failed: {}", chunkset_id, err),
 
             DECDSError::NoLeafNodesToBuildMerkleTreeOn => write!(f, "no leaf nodes to build merkle tree on"),
             DECDSError::InvalidLeafNodeIndex(leaf_index, num_leaves) => write!(f, "invalid leaf node index: {} (num_leaves: {})", leaf_index, num_leaves),

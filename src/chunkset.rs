@@ -88,27 +88,24 @@ impl RepairingChunkSet {
 
     pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(DECDSError::InvalidChunk(chunk.get_chunkset_id(), "Chunkset ID mismatch".to_string()));
+            return Err(DECDSError::InvalidChunkMetadata(chunk.get_chunkset_id()));
         }
 
         if chunk.validate_inclusion_in_chunkset(self.commitment) {
             self.add_chunk_unvalidated(chunk)
         } else {
-            Err(DECDSError::InvalidChunk(
-                chunk.get_chunkset_id(),
-                "Verification of Proof of inclusion in chunkset failed".to_string(),
-            ))
+            Err(DECDSError::InvalidProofInChunk(chunk.get_chunkset_id()))
         }
     }
 
     pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(DECDSError::InvalidChunk(chunk.get_chunkset_id(), "Chunkset ID mismatch".to_string()));
+            return Err(DECDSError::InvalidChunkMetadata(chunk.get_chunkset_id()));
         }
 
         self.decoder
             .decode(chunk.get_erasure_coded_data())
-            .map_err(|err| DECDSError::InvalidChunk(chunk.get_chunkset_id(), format!("RLNC Decoding error: {}", err)))
+            .map_err(|err| DECDSError::ChunkDecodingFailed(chunk.get_chunkset_id(), err.to_string()))
     }
 
     pub fn is_ready_to_repair(&self) -> bool {
