@@ -14,6 +14,10 @@ clippy: ## Runs clippy showing warnings
 format: ## Formats source tree
 	cargo fmt --all
 
+.PHONY: run
+run: # Run `decds` executable
+	cargo run --profile optimized
+
 .PHONY: test
 test: ## Run all tests
 	RUST_BACKTRACE=1 cargo test --profile test-release

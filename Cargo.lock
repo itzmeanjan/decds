@@ -139,7 +139,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
-name = "decds"
+name = "decds-bin"
+version = "0.1.0"
+dependencies = [
+ "decds-lib",
+]
+
+[[package]]
+name = "decds-lib"
 version = "0.1.0"
 dependencies = [
  "bincode",

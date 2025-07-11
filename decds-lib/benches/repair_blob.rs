@@ -1,4 +1,4 @@
-use decds::{Blob, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk, RepairingBlob};
+use decds_lib::{Blob, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk, RepairingBlob};
 use rand::{Rng, seq::SliceRandom};
 use std::{fmt::Debug, time::Duration};
 

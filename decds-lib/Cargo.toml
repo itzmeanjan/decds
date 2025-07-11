@@ -1,0 +1,25 @@
+[package]
+name = "decds-lib"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+rust-version = "1.85.0"
+
+[dependencies]
+blake3 = { version = "=1.8.2", features = ["serde"] }
+rlnc = { version = "=0.4.0" }
+rand = "=0.9.1"
+serde = { version = "=1.0.219", features = ["derive"] }
+bincode = { version = "=2.0.1", features = ["serde"] }
+rayon = "=1.10.0"
+
+[dev-dependencies]
+divan = "=0.1.21"
+
+[[bench]]
+name = "build_blob"
+harness = false
+
+[[bench]]
+name = "repair_blob"
+harness = false

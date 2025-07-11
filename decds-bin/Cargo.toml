@@ -1,0 +1,9 @@
+[package]
+name = "decds-bin"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+rust-version = "1.85.0"
+
+[dependencies]
+decds-lib = { version = "=0.1.0", path = "../decds-lib" }
