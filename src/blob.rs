@@ -275,7 +275,7 @@ impl RepairingBlob {
 
 #[cfg(test)]
 mod tests {
-    use crate::{blob::Blob, chunk::ProofCarryingChunk, chunkset::ChunkSet};
+    use crate::{blob::Blob, consts};
     use rand::Rng;
 
     #[test]
@@ -292,24 +292,13 @@ mod tests {
             let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
             let blob = Blob::new(blob_data).expect("Must be able to prepare blob");
-            // let num_chunks = blob.get_num_chunks();
-            // let blob_commitment = blob.get_root_commitment();
+            let blob_header = blob.get_blob_header();
 
-            // (0..num_chunks).for_each(|chunk_id| {
-            //     let chunkset_id = chunk_id / ChunkSet::NUM_ERASURE_CODED_CHUNKS;
-
-            //     let chunkset = blob.get_chunkset(chunkset_id).expect("Must be able to lookup chunkset from blob API");
-            //     let chunk = blob.get_chunk(chunk_id).expect("Must be able to lookup chunk from blob API");
-
-            //     assert!(chunk.validate_inclusion_in_blob(blob_commitment));
-            //     assert!(chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment()));
-
-            //     let chunk_as_bytes = chunk.to_bytes().expect("Must be able to encode proof-carrying chunk");
-            //     let decoded_chunk = ProofCarryingChunk::from_bytes(&chunk_as_bytes, blob_commitment).expect("Must be able to decode proof-carrying chunk");
-
-            //     assert!(decoded_chunk.validate_inclusion_in_blob(blob_commitment));
-            //     assert!(decoded_chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment()));
-            // });
+            assert!(
+                (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
+                    .flat_map(|share_id| blob.get_share(share_id).expect("Must be able to get erasure coded shares"))
+                    .all(|share| blob_header.validate_chunk(&share))
+            );
         });
     }
 }
