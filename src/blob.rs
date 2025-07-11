@@ -37,6 +37,18 @@ impl BlobHeader {
         self.num_chunksets
     }
 
+    pub fn get_chunkset_size(&self, chunkset_id: usize) -> Result<usize, DECDSError> {
+        if chunkset_id < self.get_num_chunksets() {
+            let from = chunkset_id * ChunkSet::SIZE;
+            let to = (from + ChunkSet::SIZE).min(self.get_blob_size());
+            let effective_len = to - from;
+
+            Ok(effective_len)
+        } else {
+            Err(DECDSError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
+        }
+    }
+
     pub fn get_num_chunks(&self) -> usize {
         self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
     }
