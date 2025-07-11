@@ -257,7 +257,15 @@ impl RepairingBlob {
     pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, DECDSError> {
         self.is_chunkset_ready_to_repair(chunkset_id).and_then(|yes| unsafe {
             if yes {
-                self.body.insert(chunkset_id, None).unwrap_unchecked().unwrap_unchecked().repair()
+                self.body
+                    .insert(chunkset_id, None)
+                    .unwrap_unchecked()
+                    .unwrap_unchecked()
+                    .repair()
+                    .map(|mut repaired| {
+                        repaired.truncate(self.header.get_chunkset_size(chunkset_id).unwrap_unchecked());
+                        repaired
+                    })
             } else {
                 Err(DECDSError::ChunksetNotYetReadyToRepair(chunkset_id))
             }
