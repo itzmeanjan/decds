@@ -1,5 +1,5 @@
-use decds::{Blob, RepairingBlob};
-use rand::Rng;
+use decds::{Blob, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk, RepairingBlob};
+use rand::{Rng, seq::SliceRandom};
 use std::{fmt::Debug, time::Duration};
 
 #[global_allocator]
@@ -48,8 +48,19 @@ fn repair_blob(bencher: divan::Bencher, rlnc_config: &BlobConfig) {
             let data = (0..rlnc_config.data_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
             let blob = unsafe { Blob::new(data).unwrap_unchecked() };
 
-            (blob.get_blob_header().to_owned(), blob.get_share())
+            let blob_header = blob.get_blob_header();
+            let mut blob_shares = (0..(DECDS_NUM_ERASURE_CODED_SHARES - 4))
+                .flat_map(|share_id| unsafe { blob.get_share(share_id).unwrap_unchecked() })
+                .collect::<Vec<ProofCarryingChunk>>();
+            blob_shares.shuffle(&mut rng);
+
+            (blob_header.to_owned(), blob_shares)
         })
         .input_counter(|(header, _)| divan::counter::BytesCount::new(header.get_blob_size()))
-        .bench_values(|(header, chunks)| divan::black_box(RepairingBlob::repair_full(divan::black_box(header), divan::black_box(&chunks))));
+        .bench_values(|(header, chunks)| {
+            let mut repairer = RepairingBlob::new(divan::black_box(header));
+            for chunk in chunks.iter() {
+                let _ = divan::black_box(&mut repairer).add_chunk(divan::black_box(chunk));
+            }
+        });
 }
