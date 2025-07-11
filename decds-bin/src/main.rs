@@ -1,3 +1,6 @@
+mod errors;
+
+use crate::errors::DecdsError;
 use clap::{Parser, Subcommand};
 use const_hex;
 use decds_lib::{Blob, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk};
@@ -23,7 +26,10 @@ enum DecdsCommand {
         opt_target_dir: Option<PathBuf>,
     },
     /// Validate proof of inclusion for erasure-coded chunks
-    Verify {},
+    Verify {
+        /// Directory path to erasure-coded proof-carrying chunks
+        blob_dir_path: PathBuf,
+    },
     /// Reconstructs original data blob using erasure-coded proof-carrying chunks
     Repair {},
 }
@@ -118,6 +124,53 @@ fn write_blob_share(target_dir: &PathBuf, share_id: usize, share: Vec<ProofCarry
     }
 }
 
+fn read_blob_metadata(blob_metadata_path: &PathBuf) -> BlobHeader {
+    match std::fs::read(blob_metadata_path) {
+        Ok(bytes) => match BlobHeader::from_bytes(&bytes) {
+            Ok((blob_header, n)) => {
+                if n != bytes.len() {
+                    eprintln!(
+                        "Erasure-coded blob metadata file {:?} is {} bytes longer than it should be",
+                        blob_metadata_path,
+                        bytes.len() - n
+                    );
+                    exit(1);
+                }
+
+                blob_header
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            exit(1);
+        }
+    }
+}
+
+fn read_proof_carrying_chunk(chunk_path: &PathBuf) -> Result<ProofCarryingChunk, DecdsError> {
+    match std::fs::read(chunk_path) {
+        Ok(bytes) => match ProofCarryingChunk::from_bytes(&bytes) {
+            Ok((chunk, n)) => {
+                if n != bytes.len() {
+                    Err(DecdsError::FailedToReadProofCarryingChunk(format!(
+                        "Erasure-coded chunk file {:?} is {} bytes longer than it should be",
+                        chunk_path,
+                        bytes.len() - n
+                    )))
+                } else {
+                    Ok(chunk)
+                }
+            }
+            Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
+        },
+        Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
+    }
+}
+
 fn format_bytes(bytes: usize) -> String {
     let suffixes = ["B", "KB", "MB", "GB"];
     let mut index = 0;
@@ -155,7 +208,7 @@ fn main() {
                             exit(1);
                         }
 
-                        println!("Writing erasure-coded chunks ...");
+                        println!("Writing blob metadata and erasure-coded chunks...");
 
                         write_blob_metadata(&target_dir_path, metadata);
                         (0..DECDS_NUM_ERASURE_CODED_SHARES).for_each(|share_id| {
@@ -175,7 +228,114 @@ fn main() {
                 exit(1);
             }
         },
-        DecdsCommand::Verify {} => {}
-        DecdsCommand::Repair {} => {}
+        DecdsCommand::Verify { blob_dir_path } => {
+            if !blob_dir_path.is_dir() {
+                eprintln!("{:?} is not a directory", blob_dir_path);
+                exit(1);
+            }
+
+            match blob_dir_path.try_exists() {
+                Ok(ok) => {
+                    if !ok {
+                        eprintln!("Erasure-coded blob directory {:?} doesn't exist", blob_dir_path);
+                        exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    exit(1);
+                }
+            };
+
+            let mut blob_metadata_path = blob_dir_path.clone();
+            blob_metadata_path.push("metadata.commit");
+
+            println!("Looking for erasure-coded blob metadata file {:?}...", blob_metadata_path);
+            let blob_metadata = read_blob_metadata(&blob_metadata_path);
+
+            println!("Original blob size: {}", format_bytes(blob_metadata.get_blob_size()));
+            println!("Original blob BLAKE3 Digest: {}", blob_metadata.get_blob_digest());
+            println!("Original blob root commitment: {}", blob_metadata.get_root_commitment());
+            println!("Original blob number of chunksets: {}", blob_metadata.get_num_chunksets());
+            println!("Original blob number of chunks: {}", blob_metadata.get_num_chunks());
+
+            let mut blob_share_path = blob_dir_path.clone();
+            let mut indent = String::new();
+            let mut total_num_valid_chunks = 0;
+
+            println!("Verifying erasure-coded proof-carrying chunks...\n");
+            println!("{}", blob_share_path.to_str().unwrap());
+
+            (0..blob_metadata.get_num_chunksets()).for_each(|chunkset_id| {
+                blob_share_path.push(format!("chunkset.{}", chunkset_id));
+                indent.push('\t');
+
+                let (console_log, num_valid_shares) =
+                    (0..DECDS_NUM_ERASURE_CODED_SHARES).fold((String::new(), 0usize), |(mut console_log, mut num_valid_shares), share_id| {
+                        blob_share_path.push(format!("share{:02}.data", share_id));
+                        indent.push('\t');
+
+                        let share_stat_log = if let Ok(ok) = blob_share_path.try_exists()
+                            && ok
+                        {
+                            match read_proof_carrying_chunk(&blob_share_path) {
+                                Ok(chunk) => {
+                                    if blob_metadata.validate_chunk(&chunk) {
+                                        num_valid_shares += 1;
+                                        format!("{}- {}\t✅", indent, blob_share_path.file_name().unwrap().to_str().unwrap())
+                                    } else {
+                                        format!(
+                                            "{}- {}\t🚫\tError: proof verification failed",
+                                            indent,
+                                            blob_share_path.file_name().unwrap().to_str().unwrap()
+                                        )
+                                    }
+                                }
+                                Err(e) => {
+                                    format!("{}- {}\t🚫\tError: {}", indent, blob_share_path.file_name().unwrap().to_str().unwrap(), e)
+                                }
+                            }
+                        } else {
+                            format!(
+                                "{}- {}\t🚫\tError: chunk not present",
+                                indent,
+                                blob_share_path.file_name().unwrap().to_str().unwrap()
+                            )
+                        };
+
+                        blob_share_path.pop();
+                        indent.pop();
+
+                        console_log.push_str(&share_stat_log);
+                        console_log.push('\n');
+
+                        (console_log, num_valid_shares)
+                    });
+
+                println!(
+                    "{}- {}\t({}/{})",
+                    indent,
+                    blob_share_path.file_name().unwrap().to_str().unwrap(),
+                    num_valid_shares,
+                    DECDS_NUM_ERASURE_CODED_SHARES
+                );
+                println!("{}", console_log);
+
+                total_num_valid_chunks += num_valid_shares;
+
+                blob_share_path.pop();
+                indent.pop();
+            });
+
+            println!(
+                "Found {}/{} valid chunks in {:?}.",
+                total_num_valid_chunks,
+                blob_metadata.get_num_chunks(),
+                blob_dir_path
+            );
+        }
+        DecdsCommand::Repair {} => {
+            todo!("Not implemented yet!")
+        }
     }
 }
