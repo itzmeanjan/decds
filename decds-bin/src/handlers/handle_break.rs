@@ -1,8 +1,6 @@
-use crate::utils::format_bytes;
-use const_hex;
+use crate::utils::{format_bytes, get_target_directory_path};
 use decds_lib::{Blob, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk};
-use rand::Rng;
-use std::{path::PathBuf, process::exit, str::FromStr};
+use std::{path::PathBuf, process::exit};
 
 pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
     match std::fs::read(blob_path) {
@@ -45,37 +43,6 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
             eprintln!("Error: {}", e);
             exit(1);
         }
-    }
-}
-
-fn prepare_random_target_directory_name<R: Rng + ?Sized>(prefix: &str, rng: &mut R) -> PathBuf {
-    let mut rand_suffix = [0u8; 4];
-    rng.fill_bytes(&mut rand_suffix);
-
-    let mut res = String::new();
-    res.push_str(prefix);
-    res.push('-');
-    res.push_str(&const_hex::encode(rand_suffix));
-
-    unsafe { PathBuf::from_str(&res).unwrap_unchecked() }
-}
-
-fn get_target_directory_path<R: Rng + ?Sized>(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>, rng: &mut R) -> PathBuf {
-    match opt_target_dir {
-        Some(path) => match path.try_exists() {
-            Ok(ok) => {
-                if ok {
-                    prepare_random_target_directory_name(unsafe { path.to_str().unwrap_unchecked() }, rng)
-                } else {
-                    path.clone()
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                exit(1);
-            }
-        },
-        None => prepare_random_target_directory_name(unsafe { blob_path.file_name().unwrap_unchecked().to_str().unwrap_unchecked() }, rng),
     }
 }
 

@@ -1,6 +1,5 @@
-use crate::errors::DecdsError;
-use crate::utils::format_bytes;
-use decds_lib::{BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk};
+use crate::utils::{format_bytes, read_blob_metadata, read_proof_carrying_chunk};
+use decds_lib::{BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES};
 use std::{path::PathBuf, process::exit};
 
 pub fn handle_verify_command(blob_dir_path: &PathBuf) {
@@ -21,57 +20,10 @@ pub fn handle_verify_command(blob_dir_path: &PathBuf) {
     println!("Original blob number of chunksets: {}", blob_metadata.get_num_chunksets());
     println!("Original blob number of chunks: {}", blob_metadata.get_num_chunks());
 
-    verify_erasure_coded_chunks(blob_dir_path, &blob_metadata);
+    verify_erasure_coded_chunks_and_report(blob_dir_path, &blob_metadata);
 }
 
-fn read_blob_metadata(blob_metadata_path: &PathBuf) -> BlobHeader {
-    match std::fs::read(blob_metadata_path) {
-        Ok(bytes) => match BlobHeader::from_bytes(&bytes) {
-            Ok((blob_header, n)) => {
-                if n != bytes.len() {
-                    eprintln!(
-                        "Erasure-coded blob metadata file {:?} is {} bytes longer than it should be",
-                        blob_metadata_path,
-                        bytes.len() - n
-                    );
-                    exit(1);
-                }
-
-                blob_header
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                exit(1);
-            }
-        },
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            exit(1);
-        }
-    }
-}
-
-fn read_proof_carrying_chunk(chunk_path: &PathBuf) -> Result<ProofCarryingChunk, DecdsError> {
-    match std::fs::read(chunk_path) {
-        Ok(bytes) => match ProofCarryingChunk::from_bytes(&bytes) {
-            Ok((chunk, n)) => {
-                if n != bytes.len() {
-                    Err(DecdsError::FailedToReadProofCarryingChunk(format!(
-                        "Erasure-coded chunk file {:?} is {} bytes longer than it should be",
-                        chunk_path,
-                        bytes.len() - n
-                    )))
-                } else {
-                    Ok(chunk)
-                }
-            }
-            Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
-        },
-        Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
-    }
-}
-
-fn verify_erasure_coded_chunks(target_dir: &PathBuf, blob_metadata: &BlobHeader) {
+fn verify_erasure_coded_chunks_and_report(target_dir: &PathBuf, blob_metadata: &BlobHeader) {
     let mut blob_share_path = target_dir.clone();
     let mut indent = String::new();
     let mut total_num_valid_chunks = 0;
