@@ -2,12 +2,24 @@ use crate::errors::DecdsError;
 use blake3;
 use std::collections::VecDeque;
 
+/// Represents a Merkle Tree, providing functionalities to build a binary tree from digests of the leaf nodes,
+/// get the root commitment, generate inclusion proofs, and verify them.
 pub struct MerkleTree {
     root: blake3::Hash,
     leaves: Vec<blake3::Hash>,
 }
 
 impl MerkleTree {
+    /// Creates a new Merkle Tree from a vector of BLAKE3 hashes representing the leaf nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `leaf_nodes` - A `Vec<blake3::Hash>` where each hash is a leaf node of the tree.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Self, DecdsError>` - Returns a `MerkleTree` instance if successful,
+    ///   or a `DecdsError::NoLeafNodesToBuildMerkleTreeOn` if `leaf_nodes` is empty.
     pub fn new(leaf_nodes: Vec<blake3::Hash>) -> Result<Self, DecdsError> {
         if leaf_nodes.is_empty() {
             return Err(DecdsError::NoLeafNodesToBuildMerkleTreeOn);
@@ -37,10 +49,29 @@ impl MerkleTree {
         })
     }
 
+    /// Returns the root commitment (hash) of the Merkle Tree.
+    ///
+    /// # Returns
+    ///
+    /// * `blake3::Hash` - The BLAKE3 hash of the Merkle root.
     pub fn get_root_commitment(&self) -> blake3::Hash {
         self.root
     }
 
+    /// Generates a Merkle inclusion proof for a given leaf node at `leaf_index`.
+    ///
+    /// This proof consists of the sibling hashes required to reconstruct the path
+    /// from the leaf node to the Merkle root.
+    ///
+    /// # Arguments
+    ///
+    /// * `leaf_index` - The index of the leaf node for which to generate the proof.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Vec<blake3::Hash>, DecdsError>` - Returns a `Vec<blake3::Hash>` representing
+    ///   the Merkle proof if successful. Returns `DecdsError::InvalidLeafNodeIndex` if
+    ///   `leaf_index` is out of bounds.
     pub fn generate_proof(&self, leaf_index: usize) -> Result<Vec<blake3::Hash>, DecdsError> {
         if leaf_index >= self.leaves.len() {
             return Err(DecdsError::InvalidLeafNodeIndex(leaf_index, self.leaves.len()));
@@ -84,6 +115,19 @@ impl MerkleTree {
         Ok(proof)
     }
 
+    /// Verifies a Merkle inclusion proof for a given leaf node against a provided Merkle root hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `leaf_index` - The index of the leaf node in the original set.
+    /// * `leaf_node` - The BLAKE3 hash of the leaf node to verify.
+    /// * `proof` - A slice of `blake3::Hash` representing the Merkle proof.
+    /// * `root_hash` - The expected root hash of the Merkle Tree.
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - `true` if the proof is valid and the leaf node is included in the tree
+    ///   with the given root hash, `false` otherwise.
     pub fn verify_proof(leaf_index: usize, leaf_node: blake3::Hash, proof: &[blake3::Hash], root_hash: blake3::Hash) -> bool {
         let mut current_hash = leaf_node;
         let mut current_index = leaf_index;
@@ -101,6 +145,16 @@ impl MerkleTree {
         current_hash == root_hash
     }
 
+    /// Computes the hash of a parent node from its two child hashes.
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The byte slice of the left child's hash.
+    /// * `right` - The byte slice of the right child's hash.
+    ///
+    /// # Returns
+    ///
+    /// * `blake3::Hash` - The BLAKE3 hash of the parent node.
     fn parent_hash(left: &[u8], right: &[u8]) -> blake3::Hash {
         blake3::Hasher::new().update(left).update(right).finalize()
     }

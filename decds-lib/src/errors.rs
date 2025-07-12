@@ -2,29 +2,48 @@ use crate::{chunkset::ChunkSet, consts};
 
 #[derive(Debug, PartialEq)]
 pub enum DecdsError {
+    /// Returned when trying to create a blob with empty data.
     EmptyDataForBlob,
+    /// Returned when a byte range operation has an invalid start bound.
     InvalidStartBound,
+    /// Returned when a byte range operation has an invalid end bound. Contains the invalid end value.
     InvalidEndBound(usize),
 
+    /// Returned when `BlobHeader` serialization fails. Contains the error message from the underlying serialization library.
     BlobHeaderSerializationFailed(String),
+    /// Returned when `BlobHeader` deserialization fails. Contains the error message from the underlying deserialization library.
     BlobHeaderDeserializationFailed(String),
 
+    /// Returned when `ProofCarryingChunk` serialization fails. Contains the error message from the underlying serialization library.
     ProofCarryingChunkSerializationFailed(String),
+    /// Returned when `ProofCarryingChunk` deserialization fails. Contains the error message from the underlying deserialization library.
     ProofCarryingChunkDeserializationFailed(String),
 
+    /// Returned when attempting to add a chunk to a `RepairingChunkSet` that is already ready for repair. Contains the chunkset ID.
     ChunksetReadyToRepair(usize),
+    /// Returned when attempting to repair a `RepairingChunkSet` that is not yet ready. Contains the chunkset ID.
     ChunksetNotYetReadyToRepair(usize),
+    /// Returned when attempting to add a chunk to a `RepairingChunkSet` that has already been repaired. Contains the chunkset ID.
     ChunksetAlreadyRepaired(usize),
+    /// Returned when `RepairingChunkSet` fails to repair its data. Contains the chunkset ID and an error message.
     ChunksetRepairingFailed(usize, String),
 
+    /// Returned when an invalid erasure-coded share ID is provided. Contains the invalid share ID.
     InvalidErasureCodedShareId(usize),
+    /// Returned when an invalid chunkset ID is provided. Contains the invalid chunkset ID and the total number of chunksets.
     InvalidChunksetId(usize, usize),
+    /// Returned when creating a `ChunkSet` with data of an invalid size. Contains the provided size.
     InvalidChunksetSize(usize),
+    /// Returned when a chunk contains metadata (e.g., chunkset ID) that does not match the expected context. Contains the chunkset ID.
     InvalidChunkMetadata(usize),
+    /// Returned when a `ProofCarryingChunk` fails its Merkle proof validation. Contains the chunkset ID.
     InvalidProofInChunk(usize),
+    /// Returned when decoding a chunk fails during the repair process. Contains the chunkset ID and an error message.
     ChunkDecodingFailed(usize, String),
 
+    /// Returned when attempting to build a Merkle tree with no leaf nodes.
     NoLeafNodesToBuildMerkleTreeOn,
+    /// Returned when a Merkle tree operation specifies an invalid leaf node index. Contains the invalid index and the total number of leaves.
     InvalidLeafNodeIndex(usize, usize),
 }
 
