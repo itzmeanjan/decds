@@ -29,7 +29,14 @@ enum DecdsCommand {
         blob_dir_path: PathBuf,
     },
     /// Reconstructs original data blob using erasure-coded proof-carrying chunks
-    Repair {},
+    Repair {
+        /// Directory path to erasure-coded chunks
+        #[arg(short)]
+        chunk_dir_path: PathBuf,
+        /// Optional target directory to put repaired chunksets and blob
+        #[arg(short)]
+        opt_target_dir: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -37,6 +44,9 @@ fn main() {
     match &cli.command {
         DecdsCommand::Break { blob_path, opt_target_dir } => handlers::handle_break_command(blob_path, opt_target_dir),
         DecdsCommand::Verify { blob_dir_path } => handlers::handle_verify_command(blob_dir_path),
-        DecdsCommand::Repair {} => todo!("Not implemented yet!"),
+        DecdsCommand::Repair {
+            chunk_dir_path,
+            opt_target_dir,
+        } => handlers::handle_repair_command(chunk_dir_path, opt_target_dir),
     }
 }
