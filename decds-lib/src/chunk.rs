@@ -1,4 +1,4 @@
-use crate::{chunkset::ChunkSet, consts::DECDS_BINCODE_CONFIG, errors::DECDSError, merkle_tree::MerkleTree};
+use crate::{chunkset::ChunkSet, consts::DECDS_BINCODE_CONFIG, errors::DecdsError, merkle_tree::MerkleTree};
 use serde::{Deserialize, Serialize};
 
 /// Fixed size = 1MB = 2^20 bytes
@@ -8,27 +8,25 @@ pub(crate) struct Chunk {
     chunk_id: usize,
     offset: usize,
     erasure_coded_data: Vec<u8>,
-    chunkset_digest: blake3::Hash,
 }
 
 impl Chunk {
     pub const SIZE: usize = 1usize << 20;
 
-    pub fn new(chunkset_id: usize, chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>, chunkset_digest: blake3::Hash) -> Self {
+    pub fn new(chunkset_id: usize, chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>) -> Self {
         Chunk {
             chunkset_id,
             chunk_id,
             offset,
             erasure_coded_data,
-            chunkset_digest,
         }
     }
 
     pub fn digest(&self) -> blake3::Hash {
         blake3::Hasher::new()
+            .update(&self.chunkset_id.to_le_bytes())
             .update(&self.chunk_id.to_le_bytes())
             .update(&self.erasure_coded_data)
-            .update(self.chunkset_digest.as_bytes())
             .finalize()
     }
 }
@@ -75,12 +73,12 @@ impl ProofCarryingChunk {
         self.proof.extend_from_slice(blob_proof);
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, DECDSError> {
-        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(|err| DECDSError::ProofCarryingChunkSerializationFailed(err.to_string()))
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DecdsError> {
+        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(|err| DecdsError::ProofCarryingChunkSerializationFailed(err.to_string()))
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), DECDSError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), DecdsError> {
         bincode::serde::decode_from_slice::<ProofCarryingChunk, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG)
-            .map_err(|err| DECDSError::ProofCarryingChunkDeserializationFailed(err.to_string()))
+            .map_err(|err| DecdsError::ProofCarryingChunkDeserializationFailed(err.to_string()))
     }
 }

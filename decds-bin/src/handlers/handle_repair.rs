@@ -1,5 +1,5 @@
 use crate::utils::{format_bytes, get_target_directory_path, read_blob_metadata, read_proof_carrying_chunk};
-use decds_lib::{BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, DECDSError, RepairingBlob};
+use decds_lib::{BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, DecdsError, RepairingBlob};
 use std::{io::Write, path::PathBuf, process::exit};
 
 pub fn handle_repair_command(chunk_dir_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
@@ -58,9 +58,9 @@ fn reconstruct_chunksets(chunk_dir_path: &PathBuf, target_dir_path: &PathBuf, bl
                     match repairer.add_chunk(&chunk) {
                         Ok(()) => {}
                         Err(e) => match e {
-                            DECDSError::InvalidProofInChunk(_) => {}
-                            DECDSError::InvalidChunkMetadata(_) => {}
-                            DECDSError::ChunkDecodingFailed(_, _) => {}
+                            DecdsError::InvalidProofInChunk(_) => {}
+                            DecdsError::InvalidChunkMetadata(_) => {}
+                            DecdsError::ChunkDecodingFailed(_, _) => {}
                             _ => {
                                 eprintln!("Encountered unexpected error: {}", e);
                                 exit(1);

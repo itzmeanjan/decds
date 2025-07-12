@@ -1,4 +1,4 @@
-use crate::errors::DECDSError;
+use crate::errors::DecdsError;
 use blake3;
 use std::collections::VecDeque;
 
@@ -8,9 +8,9 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    pub fn new(leaf_nodes: Vec<blake3::Hash>) -> Result<Self, DECDSError> {
+    pub fn new(leaf_nodes: Vec<blake3::Hash>) -> Result<Self, DecdsError> {
         if leaf_nodes.is_empty() {
-            return Err(DECDSError::NoLeafNodesToBuildMerkleTreeOn);
+            return Err(DecdsError::NoLeafNodesToBuildMerkleTreeOn);
         }
 
         let mut zero_hash = blake3::Hash::from_bytes([0u8; 32]);
@@ -41,9 +41,9 @@ impl MerkleTree {
         self.root
     }
 
-    pub fn generate_proof(&self, leaf_index: usize) -> Result<Vec<blake3::Hash>, DECDSError> {
+    pub fn generate_proof(&self, leaf_index: usize) -> Result<Vec<blake3::Hash>, DecdsError> {
         if leaf_index >= self.leaves.len() {
-            return Err(DECDSError::InvalidLeafNodeIndex(leaf_index, self.leaves.len()));
+            return Err(DecdsError::InvalidLeafNodeIndex(leaf_index, self.leaves.len()));
         }
 
         let num_leaf_nodes = self.leaves.len();
@@ -108,7 +108,7 @@ impl MerkleTree {
 
 #[cfg(test)]
 mod tests {
-    use crate::{errors::DECDSError, merkle_tree::MerkleTree};
+    use crate::{errors::DecdsError, merkle_tree::MerkleTree};
     use rand::Rng;
 
     fn generate_random_leaf_hashes<R: Rng + ?Sized>(leaf_count: usize, rng: &mut R) -> Vec<blake3::Hash> {
@@ -207,8 +207,8 @@ mod tests {
         let leaf_nodes = generate_random_leaf_hashes(num_leaves, &mut rand::rng());
         let merkle_tree = MerkleTree::new(leaf_nodes).expect("Must be able to build Merkle Tree");
 
-        assert_eq!(merkle_tree.generate_proof(5), Err(DECDSError::InvalidLeafNodeIndex(5, num_leaves)));
-        assert_eq!(merkle_tree.generate_proof(100), Err(DECDSError::InvalidLeafNodeIndex(100, num_leaves)));
+        assert_eq!(merkle_tree.generate_proof(5), Err(DecdsError::InvalidLeafNodeIndex(5, num_leaves)));
+        assert_eq!(merkle_tree.generate_proof(100), Err(DecdsError::InvalidLeafNodeIndex(100, num_leaves)));
     }
 
     #[test]

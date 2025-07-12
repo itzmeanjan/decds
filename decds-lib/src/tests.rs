@@ -1,4 +1,4 @@
-use crate::{Blob, ProofCarryingChunk, RepairingBlob, consts, errors::DECDSError};
+use crate::{Blob, ProofCarryingChunk, RepairingBlob, consts, errors::DecdsError};
 use rand::{Rng, seq::SliceRandom};
 
 #[test]
@@ -30,11 +30,11 @@ fn prop_test_blob_building_and_repairing_works() {
                 match repairer.add_chunk(share) {
                     Ok(()) => { /* Found a useful chunk */ }
                     Err(e) => match e {
-                        DECDSError::ChunkDecodingFailed(id, _) => unsafe {
+                        DecdsError::ChunkDecodingFailed(id, _) => unsafe {
                             assert!(!repairer.is_chunkset_ready_to_repair(id).unwrap_unchecked());
                             assert!(!repairer.is_chunkset_already_repaired(id).unwrap_unchecked());
                         },
-                        DECDSError::ChunksetReadyToRepair(id) => unsafe {
+                        DecdsError::ChunksetReadyToRepair(id) => unsafe {
                             assert!(repairer.is_chunkset_ready_to_repair(id).unwrap_unchecked());
                             assert!(!repairer.is_chunkset_already_repaired(id).unwrap_unchecked());
                         },

@@ -3,7 +3,7 @@ use crate::{
     chunk::{self, ProofCarryingChunk},
     chunkset::{self, ChunkSet},
     consts::{DECDS_BINCODE_CONFIG, DECDS_NUM_ERASURE_CODED_SHARES},
-    errors::DECDSError,
+    errors::DecdsError,
     merkle_tree::MerkleTree,
 };
 use blake3;
@@ -37,7 +37,7 @@ impl BlobHeader {
         self.num_chunksets
     }
 
-    pub fn get_chunkset_size(&self, chunkset_id: usize) -> Result<usize, DECDSError> {
+    pub fn get_chunkset_size(&self, chunkset_id: usize) -> Result<usize, DecdsError> {
         if chunkset_id < self.get_num_chunksets() {
             let from = chunkset_id * ChunkSet::SIZE;
             let to = (from + ChunkSet::SIZE).min(self.get_blob_size());
@@ -45,7 +45,7 @@ impl BlobHeader {
 
             Ok(effective_len)
         } else {
-            Err(DECDSError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
+            Err(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
         }
     }
 
@@ -53,70 +53,70 @@ impl BlobHeader {
         self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
     }
 
-    pub fn get_chunkset_commitment(&self, chunkset_id: usize) -> Result<blake3::Hash, DECDSError> {
+    pub fn get_chunkset_commitment(&self, chunkset_id: usize) -> Result<blake3::Hash, DecdsError> {
         if chunkset_id < self.get_num_chunksets() {
             Ok(self.chunkset_root_commitments[chunkset_id])
         } else {
-            Err(DECDSError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
+            Err(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
         }
     }
 
-    pub fn get_byte_range_for_chunkset(&self, chunkset_id: usize) -> Result<(usize, usize), DECDSError> {
+    pub fn get_byte_range_for_chunkset(&self, chunkset_id: usize) -> Result<(usize, usize), DecdsError> {
         if chunkset_id < self.get_num_chunksets() {
             let from = chunkset_id * ChunkSet::SIZE;
             let to = from + ChunkSet::SIZE;
 
             Ok((from, to))
         } else {
-            Err(DECDSError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
+            Err(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
         }
     }
 
-    pub fn get_chunkset_ids_for_byte_range(&self, byte_range: impl RangeBounds<usize>) -> Result<Vec<usize>, DECDSError> {
+    pub fn get_chunkset_ids_for_byte_range(&self, byte_range: impl RangeBounds<usize>) -> Result<Vec<usize>, DecdsError> {
         let start = match byte_range.start_bound() {
             std::ops::Bound::Unbounded => 0,
             std::ops::Bound::Included(&x) => x,
-            _ => return Err(DECDSError::InvalidStartBound),
+            _ => return Err(DecdsError::InvalidStartBound),
         };
 
         let end = match byte_range.end_bound() {
             std::ops::Bound::Included(&x) => x,
             std::ops::Bound::Excluded(&x) => {
                 if x == 0 {
-                    return Err(DECDSError::InvalidEndBound(x));
+                    return Err(DecdsError::InvalidEndBound(x));
                 }
 
                 x - 1
             }
-            _ => return Err(DECDSError::InvalidEndBound(usize::MAX)),
+            _ => return Err(DecdsError::InvalidEndBound(usize::MAX)),
         };
 
         let start_chunkset_id = start / ChunkSet::SIZE;
         let end_chunkset_id = end / ChunkSet::SIZE;
 
         if end_chunkset_id >= self.get_num_chunksets() {
-            return Err(DECDSError::InvalidChunksetId(end_chunkset_id, self.get_num_chunksets()));
+            return Err(DecdsError::InvalidChunksetId(end_chunkset_id, self.get_num_chunksets()));
         }
 
         Ok((start_chunkset_id..=end_chunkset_id).collect())
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, DECDSError> {
-        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(|err| DECDSError::BlobHeaderSerializationFailed(err.to_string()))
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DecdsError> {
+        bincode::serde::encode_to_vec(self, DECDS_BINCODE_CONFIG).map_err(|err| DecdsError::BlobHeaderSerializationFailed(err.to_string()))
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), DECDSError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<(Self, usize), DecdsError> {
         match bincode::serde::decode_from_slice::<BlobHeader, bincode::config::Configuration>(bytes, DECDS_BINCODE_CONFIG) {
             Ok((header, n)) => {
                 if header.num_chunksets != header.chunkset_root_commitments.len() {
-                    return Err(DECDSError::BlobHeaderDeserializationFailed(
+                    return Err(DecdsError::BlobHeaderDeserializationFailed(
                         "number of chunksets and root commitments do not match".to_string(),
                     ));
                 }
 
                 Ok((header, n))
             }
-            Err(err) => Err(DECDSError::BlobHeaderDeserializationFailed(err.to_string())),
+            Err(err) => Err(DecdsError::BlobHeaderDeserializationFailed(err.to_string())),
         }
     }
 
@@ -133,9 +133,9 @@ pub struct Blob {
 }
 
 impl Blob {
-    pub fn new(mut data: Vec<u8>) -> Result<Self, DECDSError> {
+    pub fn new(mut data: Vec<u8>) -> Result<Self, DecdsError> {
         if data.is_empty() {
-            return Err(DECDSError::EmptyDataForBlob);
+            return Err(DecdsError::EmptyDataForBlob);
         }
 
         let blob_digest = blake3::hash(&data);
@@ -180,9 +180,9 @@ impl Blob {
         &self.header
     }
 
-    pub fn get_share(&self, share_id: usize) -> Result<Vec<ProofCarryingChunk>, DECDSError> {
+    pub fn get_share(&self, share_id: usize) -> Result<Vec<ProofCarryingChunk>, DecdsError> {
         if share_id >= DECDS_NUM_ERASURE_CODED_SHARES {
-            return Err(DECDSError::InvalidErasureCodedShareId(share_id));
+            return Err(DecdsError::InvalidErasureCodedShareId(share_id));
         }
 
         Ok((0..self.header.num_chunksets)
@@ -214,50 +214,50 @@ impl RepairingBlob {
         }
     }
 
-    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
+    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DecdsError> {
         let chunkset_id = chunk.get_chunkset_id();
 
         match self
             .body
             .get_mut(&chunkset_id)
-            .ok_or(DECDSError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
+            .ok_or(DecdsError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
         {
             Some(chunkset) => {
                 if self.header.validate_chunk(chunk) {
                     if !chunkset.is_ready_to_repair() {
                         chunkset.add_chunk_unvalidated(chunk)
                     } else {
-                        Err(DECDSError::ChunksetReadyToRepair(chunkset_id))
+                        Err(DecdsError::ChunksetReadyToRepair(chunkset_id))
                     }
                 } else {
-                    Err(DECDSError::InvalidProofInChunk(chunkset_id))
+                    Err(DecdsError::InvalidProofInChunk(chunkset_id))
                 }
             }
-            None => Err(DECDSError::ChunksetAlreadyRepaired(chunkset_id)),
+            None => Err(DecdsError::ChunksetAlreadyRepaired(chunkset_id)),
         }
     }
 
-    pub fn is_chunkset_ready_to_repair(&self, chunkset_id: usize) -> Result<bool, DECDSError> {
+    pub fn is_chunkset_ready_to_repair(&self, chunkset_id: usize) -> Result<bool, DecdsError> {
         Ok(self
             .body
             .get(&chunkset_id)
-            .ok_or(DECDSError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
+            .ok_or(DecdsError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
             .as_ref()
             .is_some_and(|x| x.is_ready_to_repair()))
     }
 
-    pub fn is_chunkset_already_repaired(&self, chunkset_id: usize) -> Result<bool, DECDSError> {
+    pub fn is_chunkset_already_repaired(&self, chunkset_id: usize) -> Result<bool, DecdsError> {
         Ok(self
             .body
             .get(&chunkset_id)
-            .ok_or(DECDSError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
+            .ok_or(DecdsError::InvalidChunksetId(chunkset_id, self.header.get_num_chunksets()))?
             .is_none())
     }
 
-    pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, DECDSError> {
+    pub fn get_repaired_chunkset(&mut self, chunkset_id: usize) -> Result<Vec<u8>, DecdsError> {
         self.is_chunkset_already_repaired(chunkset_id).and_then(|yes| {
             if yes {
-                Err(DECDSError::ChunksetAlreadyRepaired(chunkset_id))
+                Err(DecdsError::ChunksetAlreadyRepaired(chunkset_id))
             } else {
                 self.is_chunkset_ready_to_repair(chunkset_id).and_then(|yes| unsafe {
                     if yes {
@@ -271,7 +271,7 @@ impl RepairingBlob {
                                 repaired
                             })
                     } else {
-                        Err(DECDSError::ChunksetNotYetReadyToRepair(chunkset_id))
+                        Err(DecdsError::ChunksetNotYetReadyToRepair(chunkset_id))
                     }
                 })
             }

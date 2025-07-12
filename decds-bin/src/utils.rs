@@ -2,7 +2,7 @@ use decds_lib::{BlobHeader, ProofCarryingChunk};
 use rand::Rng;
 use std::{path::PathBuf, process::exit, str::FromStr};
 
-use crate::errors::DecdsError;
+use crate::errors::DecdsCLIError;
 
 pub fn format_bytes(bytes: usize) -> String {
     let suffixes = ["B", "KB", "MB", "GB"];
@@ -44,12 +44,12 @@ pub fn read_blob_metadata(blob_metadata_path: &PathBuf) -> BlobHeader {
     }
 }
 
-pub fn read_proof_carrying_chunk(chunk_path: &PathBuf) -> Result<ProofCarryingChunk, DecdsError> {
+pub fn read_proof_carrying_chunk(chunk_path: &PathBuf) -> Result<ProofCarryingChunk, DecdsCLIError> {
     match std::fs::read(chunk_path) {
         Ok(bytes) => match ProofCarryingChunk::from_bytes(&bytes) {
             Ok((chunk, n)) => {
                 if n != bytes.len() {
-                    Err(DecdsError::FailedToReadProofCarryingChunk(format!(
+                    Err(DecdsCLIError::FailedToReadProofCarryingChunk(format!(
                         "Erasure-coded chunk file {:?} is {} bytes longer than it should be",
                         chunk_path,
                         bytes.len() - n
@@ -58,9 +58,9 @@ pub fn read_proof_carrying_chunk(chunk_path: &PathBuf) -> Result<ProofCarryingCh
                     Ok(chunk)
                 }
             }
-            Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
+            Err(e) => Err(DecdsCLIError::FailedToReadProofCarryingChunk(e.to_string())),
         },
-        Err(e) => Err(DecdsError::FailedToReadProofCarryingChunk(e.to_string())),
+        Err(e) => Err(DecdsCLIError::FailedToReadProofCarryingChunk(e.to_string())),
     }
 }
 

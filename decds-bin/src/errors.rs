@@ -1,12 +1,12 @@
 #[derive(Debug, PartialEq)]
-pub enum DecdsError {
+pub enum DecdsCLIError {
     FailedToReadProofCarryingChunk(String),
 }
 
-impl std::fmt::Display for DecdsError {
+impl std::fmt::Display for DecdsCLIError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecdsError::FailedToReadProofCarryingChunk(err) => write!(f, "{}", err),
+            DecdsCLIError::FailedToReadProofCarryingChunk(err) => write!(f, "{}", err),
         }
     }
 }

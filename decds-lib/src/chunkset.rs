@@ -1,7 +1,7 @@
 use crate::{
     chunk::{self, Chunk},
     consts::DECDS_NUM_ERASURE_CODED_SHARES,
-    errors::DECDSError,
+    errors::DecdsError,
     merkle_tree::MerkleTree,
 };
 
@@ -18,12 +18,10 @@ impl ChunkSet {
     pub const NUM_ERASURE_CODED_CHUNKS: usize = DECDS_NUM_ERASURE_CODED_SHARES;
     pub const PROOF_SIZE: usize = usize::ilog2(Self::NUM_ERASURE_CODED_CHUNKS) as usize; // These many 32 bytes BLAKE3 digests
 
-    pub fn new(offset: usize, chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, DECDSError> {
+    pub fn new(offset: usize, chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, DecdsError> {
         if data.len() != Self::SIZE {
-            return Err(DECDSError::InvalidChunksetSize(data.len()));
+            return Err(DecdsError::InvalidChunksetSize(data.len()));
         }
-
-        let chunkset_digest = blake3::hash(&data);
 
         let mut rng = rand::rng();
         let encoder = unsafe { rlnc::full::encoder::Encoder::new(data, Self::NUM_ORIGINAL_CHUNKS).unwrap_unchecked() };
@@ -33,7 +31,7 @@ impl ChunkSet {
                 let chunk_id = chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS + i;
                 let erasure_coded_data = encoder.code(&mut rng);
 
-                chunk::Chunk::new(chunkset_id, chunk_id, offset, erasure_coded_data, chunkset_digest)
+                chunk::Chunk::new(chunkset_id, chunk_id, offset, erasure_coded_data)
             })
             .collect::<Vec<Chunk>>();
 
@@ -58,8 +56,8 @@ impl ChunkSet {
         self.commitment
     }
 
-    pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, DECDSError> {
-        self.chunks.get(chunk_id).ok_or(DECDSError::InvalidErasureCodedShareId(chunk_id))
+    pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, DecdsError> {
+        self.chunks.get(chunk_id).ok_or(DecdsError::InvalidErasureCodedShareId(chunk_id))
     }
 
     pub fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
@@ -86,39 +84,35 @@ impl RepairingChunkSet {
         }
     }
 
-    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
-        if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(DECDSError::InvalidChunkMetadata(chunk.get_chunkset_id()));
-        }
-
+    pub fn add_chunk(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DecdsError> {
         if chunk.validate_inclusion_in_chunkset(self.commitment) {
             self.add_chunk_unvalidated(chunk)
         } else {
-            Err(DECDSError::InvalidProofInChunk(chunk.get_chunkset_id()))
+            Err(DecdsError::InvalidProofInChunk(chunk.get_chunkset_id()))
         }
     }
 
-    pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DECDSError> {
+    pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DecdsError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
-            return Err(DECDSError::InvalidChunkMetadata(chunk.get_chunkset_id()));
+            return Err(DecdsError::InvalidChunkMetadata(chunk.get_chunkset_id()));
         }
 
         self.decoder
             .decode(chunk.get_erasure_coded_data())
-            .map_err(|err| DECDSError::ChunkDecodingFailed(chunk.get_chunkset_id(), err.to_string()))
+            .map_err(|err| DecdsError::ChunkDecodingFailed(chunk.get_chunkset_id(), err.to_string()))
     }
 
     pub fn is_ready_to_repair(&self) -> bool {
         self.decoder.is_already_decoded()
     }
 
-    pub fn repair(self) -> Result<Vec<u8>, DECDSError> {
+    pub fn repair(self) -> Result<Vec<u8>, DecdsError> {
         if self.is_ready_to_repair() {
             self.decoder
                 .get_decoded_data()
-                .map_err(|err| DECDSError::ChunksetRepairingFailed(self.chunkset_id, format!("RLNC Decoding error: {}", err)))
+                .map_err(|err| DecdsError::ChunksetRepairingFailed(self.chunkset_id, format!("RLNC Decoding error: {}", err)))
         } else {
-            Err(DECDSError::ChunksetNotYetReadyToRepair(self.chunkset_id))
+            Err(DecdsError::ChunksetNotYetReadyToRepair(self.chunkset_id))
         }
     }
 }

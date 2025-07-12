@@ -1,7 +1,7 @@
 use crate::{chunkset::ChunkSet, consts};
 
 #[derive(Debug, PartialEq)]
-pub enum DECDSError {
+pub enum DecdsError {
     EmptyDataForBlob,
     InvalidStartBound,
     InvalidEndBound(usize),
@@ -28,38 +28,38 @@ pub enum DECDSError {
     InvalidLeafNodeIndex(usize, usize),
 }
 
-impl std::fmt::Display for DECDSError {
+impl std::fmt::Display for DecdsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DECDSError::EmptyDataForBlob => write!(f, "empty data for blob"),
-            DECDSError::InvalidStartBound => write!(f, "invalid start bound"),
-            DECDSError::InvalidEndBound(end) => write!(f, "invalid end bound: {}", end),
+            DecdsError::EmptyDataForBlob => write!(f, "empty data for blob"),
+            DecdsError::InvalidStartBound => write!(f, "invalid start bound"),
+            DecdsError::InvalidEndBound(end) => write!(f, "invalid end bound: {}", end),
 
-            DECDSError::BlobHeaderSerializationFailed(err) => write!(f, "failed to serialize blob header: {}", err),
-            DECDSError::BlobHeaderDeserializationFailed(err) => write!(f, "failed to deserialize blob header: {}", err),
+            DecdsError::BlobHeaderSerializationFailed(err) => write!(f, "failed to serialize blob header: {}", err),
+            DecdsError::BlobHeaderDeserializationFailed(err) => write!(f, "failed to deserialize blob header: {}", err),
 
-            DECDSError::ProofCarryingChunkSerializationFailed(err) => write!(f, "failed to serialize proof carrying chunk: {}", err),
-            DECDSError::ProofCarryingChunkDeserializationFailed(err) => write!(f, "failed to deserialize proof carrying chunk: {}", err),
+            DecdsError::ProofCarryingChunkSerializationFailed(err) => write!(f, "failed to serialize proof carrying chunk: {}", err),
+            DecdsError::ProofCarryingChunkDeserializationFailed(err) => write!(f, "failed to deserialize proof carrying chunk: {}", err),
 
-            DECDSError::ChunksetReadyToRepair(id) => write!(f, "chunkset {} is ready to repair", id),
-            DECDSError::ChunksetNotYetReadyToRepair(id) => write!(f, "chunkset {} is not ready to repair", id),
-            DECDSError::ChunksetAlreadyRepaired(id) => write!(f, "chunkset {} is already repaired", id),
-            DECDSError::ChunksetRepairingFailed(id, err) => write!(f, "chunkset {} repairing failed: {}", id, err),
+            DecdsError::ChunksetReadyToRepair(id) => write!(f, "chunkset {} is ready to repair", id),
+            DecdsError::ChunksetNotYetReadyToRepair(id) => write!(f, "chunkset {} is not ready to repair", id),
+            DecdsError::ChunksetAlreadyRepaired(id) => write!(f, "chunkset {} is already repaired", id),
+            DecdsError::ChunksetRepairingFailed(id, err) => write!(f, "chunkset {} repairing failed: {}", id, err),
 
-            DECDSError::InvalidErasureCodedShareId(id) => write!(
+            DecdsError::InvalidErasureCodedShareId(id) => write!(
                 f,
                 "invalid erasure coded share id: {} (num_shares: {})",
                 id,
                 consts::DECDS_NUM_ERASURE_CODED_SHARES
             ),
-            DECDSError::InvalidChunksetId(id, num_chunksets) => write!(f, "invalid chunkset id: {} (num_chunksets: {})", id, num_chunksets),
-            DECDSError::InvalidChunksetSize(size) => write!(f, "invalid chunkset size: {}B, expected: {}B", size, ChunkSet::SIZE),
-            DECDSError::InvalidChunkMetadata(chunkset_id) => write!(f, "invalid chunk for chunkset {}", chunkset_id),
-            DECDSError::InvalidProofInChunk(chunkset_id) => write!(f, "invalid proof carrying chunk for chunkset {}", chunkset_id),
-            DECDSError::ChunkDecodingFailed(chunkset_id, err) => write!(f, "decoding chunk for chunkset {} failed: {}", chunkset_id, err),
+            DecdsError::InvalidChunksetId(id, num_chunksets) => write!(f, "invalid chunkset id: {} (num_chunksets: {})", id, num_chunksets),
+            DecdsError::InvalidChunksetSize(size) => write!(f, "invalid chunkset size: {}B, expected: {}B", size, ChunkSet::SIZE),
+            DecdsError::InvalidChunkMetadata(chunkset_id) => write!(f, "invalid chunk for chunkset {}", chunkset_id),
+            DecdsError::InvalidProofInChunk(chunkset_id) => write!(f, "invalid proof carrying chunk for chunkset {}", chunkset_id),
+            DecdsError::ChunkDecodingFailed(chunkset_id, err) => write!(f, "decoding chunk for chunkset {} failed: {}", chunkset_id, err),
 
-            DECDSError::NoLeafNodesToBuildMerkleTreeOn => write!(f, "no leaf nodes to build merkle tree on"),
-            DECDSError::InvalidLeafNodeIndex(leaf_index, num_leaves) => write!(f, "invalid leaf node index: {} (num_leaves: {})", leaf_index, num_leaves),
+            DecdsError::NoLeafNodesToBuildMerkleTreeOn => write!(f, "no leaf nodes to build merkle tree on"),
+            DecdsError::InvalidLeafNodeIndex(leaf_index, num_leaves) => write!(f, "invalid leaf node index: {} (num_leaves: {})", leaf_index, num_leaves),
         }
     }
 }
