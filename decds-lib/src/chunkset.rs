@@ -5,9 +5,10 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 
-/// Represents a set of erasure-coded chunks, along with its Merkle root commitment.
-/// This structure is used for encoding a fixed size (10MB = 10 * 2^20 bytes) portion of the original blob data
-/// into `NUM_ERASURE_CODED_CHUNKS` (= 16) erasure-coded verifiable chunks.
+/// Represents a fixed set (= 16) of erasure-coded chunks, along with its Merkle root commitment.
+/// This structure is used for encoding a fixed size (10MB = 10 * 2^20 bytes) portion of the original
+/// blob data into `NUM_ERASURE_CODED_CHUNKS` (= 16) erasure-coded verifiable chunks, each carrying
+/// a merkle proof of inclusion in both this chunkset and the blob.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ChunkSet {
     commitment: blake3::Hash,
@@ -15,34 +16,26 @@ pub(crate) struct ChunkSet {
 }
 
 impl ChunkSet {
-    /// The fixed size of a `ChunkSet` in bytes (10MB).
-    pub const SIZE: usize = 10 * Chunk::SIZE;
-
-    /// The number of original data chunks within a `ChunkSet` before erasure coding.
     pub const NUM_ORIGINAL_CHUNKS: usize = 10;
-
-    /// The total number of erasure-coded chunks generated from a `ChunkSet`.
+    pub const BYTE_LENGTH: usize = Self::NUM_ORIGINAL_CHUNKS * Chunk::BYTE_LENGTH;
     pub const NUM_ERASURE_CODED_CHUNKS: usize = DECDS_NUM_ERASURE_CODED_SHARES;
-
-    /// The number of BLAKE3 digests required for a Merkle proof within a `ChunkSet`.
     pub const PROOF_SIZE: usize = usize::ilog2(Self::NUM_ERASURE_CODED_CHUNKS) as usize;
 
     /// Creates a new `ChunkSet` by taking a fixed sized block of data, splits into 10 equal sized chunks,
-    /// RLNC encoding them into 16 erasure-coded chunks, and building a Merkle tree over these chunks.
+    /// each of 1MB, RLNC encoding them into 16 erasure-coded chunks, and building a Merkle tree over these chunks.
     ///
     /// # Arguments
     ///
-    /// * `offset` - The starting byte offset of this chunkset within the original blob data.
     /// * `chunkset_id` - The unique identifier for this chunkset.
-    /// * `data` - The raw data (10MB) to be encoded into chunks for this chunkset.
+    /// * `data` - The raw data (10MB) to be erasure-coded into chunks for this chunkset.
     ///
     /// # Returns
     ///
     /// Returns a `Result` which is:
     /// - `Ok(ChunkSet)` containing the newly created `ChunkSet` if successful.
-    /// - `Err(DecdsError::InvalidChunksetSize)` if the `data` length does not match `ChunkSet::SIZE`.
-    pub fn new(offset: usize, chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, DecdsError> {
-        if data.len() != Self::SIZE {
+    /// - `Err(DecdsError::InvalidChunksetSize)` if the `data` length does not match `ChunkSet::BYTE_LENGTH`.
+    pub fn new(chunkset_id: usize, data: Vec<u8>) -> Result<ChunkSet, DecdsError> {
+        if data.len() != Self::BYTE_LENGTH {
             return Err(DecdsError::InvalidChunksetSize(data.len()));
         }
 
@@ -54,7 +47,7 @@ impl ChunkSet {
                 let chunk_id = chunkset_id * Self::NUM_ERASURE_CODED_CHUNKS + i;
                 let erasure_coded_data = encoder.code(&mut rng);
 
-                chunk::Chunk::new(chunkset_id, chunk_id, offset, erasure_coded_data)
+                chunk::Chunk::new(chunkset_id, chunk_id, erasure_coded_data)
             })
             .collect::<Vec<Chunk>>();
 
@@ -76,10 +69,6 @@ impl ChunkSet {
     }
 
     /// Returns the Merkle root commitment of this `ChunkSet`.
-    ///
-    /// # Returns
-    ///
-    /// A `blake3::Hash` representing the root commitment.
     pub fn get_root_commitment(&self) -> blake3::Hash {
         self.commitment
     }
@@ -99,22 +88,22 @@ impl ChunkSet {
         self.chunks.get(chunk_id).ok_or(DecdsError::InvalidErasureCodedShareId(chunk_id))
     }
 
-    /// Appends a Merkle proof for blob inclusion to all `ProofCarryingChunk`s within this `ChunkSet`.
+    /// Appends a Merkle proof for the blob inclusion to all `ProofCarryingChunk`s within this `ChunkSet`.
     /// This extends the chunkset-level proof to a blob-level proof for each chunk.
     ///
     /// # Arguments
     ///
     /// * `blob_proof` - A slice of `blake3::Hash` representing the Merkle path from the chunkset's
     ///   root commitment to the blob's root commitment.
-    pub fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
+    pub(crate) fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
         if !blob_proof.is_empty() {
             self.chunks.iter_mut().for_each(|chunk| chunk.append_proof_to_blob_root(blob_proof));
         }
     }
 }
 
-/// A structure designed to reconstruct the original data of a `ChunkSet`
-/// by collecting erasure-coded chunks, verifying their integrity, and performing RLNC decoding.
+/// A structure designed to help incrementally reconstruct the original data of a `ChunkSet`
+/// by collecting enough erasure-coded chunks, verifying their integrity, and performing RLNC decoding.
 pub struct RepairingChunkSet {
     chunkset_id: usize,
     commitment: blake3::Hash,
@@ -122,17 +111,17 @@ pub struct RepairingChunkSet {
 }
 
 impl RepairingChunkSet {
-    /// The padded byte length for individual chunks used in RLNC decoding.
+    /// The padded byte length of individual chunks used in RLNC encoding.
     /// It ensures that the total chunkset size is a multiple of `NUM_ORIGINAL_CHUNKS`,
     /// after appending a single byte end-of-data marker.
-    const PADDED_CHUNK_BYTE_LEN: usize = (ChunkSet::SIZE + 1).div_ceil(ChunkSet::NUM_ORIGINAL_CHUNKS);
+    const PADDED_CHUNK_BYTE_LEN: usize = (ChunkSet::BYTE_LENGTH + 1).div_ceil(ChunkSet::NUM_ORIGINAL_CHUNKS);
 
     /// Creates a new `RepairingChunkSet` instance.
     ///
     /// # Arguments
     ///
     /// * `chunkset_id` - The ID of the chunkset being repaired.
-    /// * `commitment` - The expected Merkle root commitment of the chunkset, used for chunk validation.
+    /// * `commitment` - The expected Merkle root commitment of the chunkset, used for validating chunk inclusion in chunkset.
     ///
     /// # Returns
     ///
@@ -146,7 +135,7 @@ impl RepairingChunkSet {
     }
 
     /// Adds a `ProofCarryingChunk` to the `RepairingChunkSet` after validating its Merkle proof.
-    /// The chunk's inclusion proof in its chunkset is verified against the `commitment` stored in `RepairingChunkSet`.
+    /// The chunk's inclusion proof in this chunkset is verified against the `commitment` stored in `RepairingChunkSet`.
     ///
     /// # Arguments
     ///
@@ -168,7 +157,7 @@ impl RepairingChunkSet {
     }
 
     /// Adds a `ProofCarryingChunk` to the `RepairingChunkSet` without validating its Merkle proof.
-    /// This method is intended for internal use when proof validation has already occurred.
+    /// This method is intended for use when proof validation has already occurred.
     ///
     /// # Arguments
     ///
@@ -179,10 +168,14 @@ impl RepairingChunkSet {
     /// Returns a `Result` which is:
     /// - `Ok(())` if the chunk is successfully added.
     /// - `Err(DecdsError::InvalidChunkMetadata)` if the chunk's `chunkset_id` does not match this `RepairingChunkSet`.
+    /// - `Err(DecdsError::ChunksetReadyToRepair)` if the chunkset is ready to repair, no more chunks are required. Just call `repair`.
     /// - `Err(DecdsError::ChunkDecodingFailed)` if the underlying RLNC decoding operation fails.
     pub fn add_chunk_unvalidated(&mut self, chunk: &chunk::ProofCarryingChunk) -> Result<(), DecdsError> {
         if self.chunkset_id != chunk.get_chunkset_id() {
             return Err(DecdsError::InvalidChunkMetadata(chunk.get_chunkset_id()));
+        }
+        if self.is_ready_to_repair() {
+            return Err(DecdsError::ChunksetReadyToRepair(self.chunkset_id));
         }
 
         self.decoder
@@ -190,11 +183,7 @@ impl RepairingChunkSet {
             .map_err(|err| DecdsError::ChunkDecodingFailed(chunk.get_chunkset_id(), err.to_string()))
     }
 
-    /// Checks if enough useful chunks have been collected to repair the original data for this chunkset.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the chunkset is ready to be repaired, `false` otherwise.
+    /// Checks if enough useful erasure-coded chunks have been collected to repair the original data for this chunkset.
     pub fn is_ready_to_repair(&self) -> bool {
         self.decoder.is_already_decoded()
     }
@@ -222,27 +211,45 @@ impl RepairingChunkSet {
 #[cfg(test)]
 mod tests {
     use crate::{
+        DecdsError,
         chunk::ProofCarryingChunk,
         chunkset::{ChunkSet, RepairingChunkSet},
+        merkle_tree::tests::flip_a_bit,
     };
     use rand::{Rng, seq::SliceRandom};
 
+    fn flip_a_single_bit_in_proof_carrying_chunk<R: Rng + ?Sized>(mut chunk_bytes: Vec<u8>, rng: &mut R) -> Vec<u8> {
+        if chunk_bytes.is_empty() {
+            return chunk_bytes;
+        }
+
+        let random_byte_index = rng.random_range(0..chunk_bytes.len());
+        let random_bit_index = rng.random_range(0..u8::BITS) as usize;
+
+        chunk_bytes[random_byte_index] = flip_a_bit(chunk_bytes[random_byte_index], random_bit_index);
+        chunk_bytes
+    }
+
     #[test]
-    fn prop_test_erasure_coding_chunks_work() {
+    fn prop_test_erasure_coding_chunks_and_validating_proofs_work() {
         const NUM_TEST_ITERATIONS: usize = 10;
         let mut rng = rand::rng();
 
         (0..NUM_TEST_ITERATIONS).for_each(|_| {
-            let data = (0..ChunkSet::SIZE).map(|_| rng.random()).collect::<Vec<u8>>();
-            let chunkset = ChunkSet::new(0, 0, data).expect("Must be able to build erasure-coded ChunkSet");
+            let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+            let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
 
             for i in 0..ChunkSet::NUM_ERASURE_CODED_CHUNKS {
-                assert!(
-                    chunkset
-                        .get_chunk(i)
-                        .expect("Must be able to lookup chunk by id")
-                        .validate_inclusion_in_chunkset(chunkset.get_root_commitment())
-                );
+                let chunk = chunkset.get_chunk(i).expect("Must be able to lookup chunk by id");
+                assert!(chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment()));
+
+                let chunk_bytes = chunk.to_bytes().expect("Must be able to serialize proof-carrying chunk as bytes");
+                let bit_flipped_chunk_bytes = flip_a_single_bit_in_proof_carrying_chunk(chunk_bytes, &mut rng);
+
+                match ProofCarryingChunk::from_bytes(&bit_flipped_chunk_bytes) {
+                    Ok((bit_flipped_chunk, _)) => assert!(!bit_flipped_chunk.validate_inclusion_in_chunkset(chunkset.get_root_commitment())),
+                    Err(e) => assert!(e.to_string().starts_with("failed to deserialize proof carrying chunk: ")),
+                }
             }
         });
     }
@@ -253,10 +260,10 @@ mod tests {
         let mut rng = rand::rng();
 
         (0..NUM_TEST_ITERATIONS).for_each(|_| {
-            let data = (0..ChunkSet::SIZE).map(|_| rng.random()).collect::<Vec<u8>>();
+            let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
             let data_copy = data.clone();
 
-            let chunkset = ChunkSet::new(0, 0, data).expect("Must be able to build erasure-coded ChunkSet");
+            let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
             let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
             let mut chunks = (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
@@ -273,5 +280,81 @@ mod tests {
             let repaired_data = repairing_chunkset.repair().expect("Data must be reconstructed by this point!");
             assert_eq!(data_copy, repaired_data);
         });
+    }
+
+    #[test]
+    fn test_chunkset_new_invalid_size() {
+        let data_too_small = vec![0u8; ChunkSet::BYTE_LENGTH - 1];
+        let data_too_large = vec![0u8; ChunkSet::BYTE_LENGTH + 1];
+
+        assert_eq!(
+            ChunkSet::new(0, data_too_small),
+            Err(DecdsError::InvalidChunksetSize(ChunkSet::BYTE_LENGTH - 1))
+        );
+        assert_eq!(
+            ChunkSet::new(0, data_too_large),
+            Err(DecdsError::InvalidChunksetSize(ChunkSet::BYTE_LENGTH + 1))
+        );
+    }
+
+    #[test]
+    fn test_chunkset_get_chunk_out_of_bounds() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+
+        assert_eq!(
+            chunkset.get_chunk(ChunkSet::NUM_ERASURE_CODED_CHUNKS),
+            Err(DecdsError::InvalidErasureCodedShareId(ChunkSet::NUM_ERASURE_CODED_CHUNKS))
+        );
+        assert_eq!(
+            chunkset.get_chunk(ChunkSet::NUM_ERASURE_CODED_CHUNKS + 100),
+            Err(DecdsError::InvalidErasureCodedShareId(ChunkSet::NUM_ERASURE_CODED_CHUNKS + 100))
+        );
+    }
+
+    #[test]
+    fn test_repairing_chunkset_add_chunk_after_ready_to_repair() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data.clone()).expect("Must be able to build erasure-coded ChunkSet");
+        let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
+
+        let mut chunk_idx = 0;
+        while !repairing_chunkset.is_ready_to_repair() {
+            let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
+            repairing_chunkset.add_chunk(chunk).expect("Must be able to add valid chunk");
+
+            chunk_idx += 1;
+        }
+
+        while chunk_idx < ChunkSet::NUM_ERASURE_CODED_CHUNKS {
+            let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
+            assert_eq!(repairing_chunkset.add_chunk(chunk), Err(DecdsError::ChunksetReadyToRepair(0)));
+
+            chunk_idx += 1;
+        }
+
+        let repaired_chunkset = repairing_chunkset.repair().expect("Must be able to repair chunkset");
+        assert_eq!(repaired_chunkset, data);
+    }
+
+    #[test]
+    fn test_repairing_chunkset_repair_not_ready() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+        let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
+
+        // Add fewer than NUM_ORIGINAL_CHUNKS chunks
+        for i in 0..(ChunkSet::NUM_ORIGINAL_CHUNKS - 1) {
+            repairing_chunkset.add_chunk(chunkset.get_chunk(i).unwrap()).unwrap();
+        }
+
+        assert!(!repairing_chunkset.is_ready_to_repair());
+        assert_eq!(repairing_chunkset.repair(), Err(DecdsError::ChunksetNotYetReadyToRepair(0)));
     }
 }

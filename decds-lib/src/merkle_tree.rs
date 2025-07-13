@@ -161,7 +161,7 @@ impl MerkleTree {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::{errors::DecdsError, merkle_tree::MerkleTree};
     use rand::Rng;
 
@@ -178,7 +178,7 @@ mod tests {
 
     /// Flips bit at index `bit_idx`, returning resulting byte.
     /// Caller must ensure that `bit_idx <= 7`.
-    fn flip_a_bit(byte: u8, bit_idx: usize) -> u8 {
+    pub fn flip_a_bit(byte: u8, bit_idx: usize) -> u8 {
         byte ^ (1u8 << bit_idx)
     }
 

@@ -72,7 +72,7 @@ impl std::fmt::Display for DecdsError {
                 consts::DECDS_NUM_ERASURE_CODED_SHARES
             ),
             DecdsError::InvalidChunksetId(id, num_chunksets) => write!(f, "invalid chunkset id: {} (num_chunksets: {})", id, num_chunksets),
-            DecdsError::InvalidChunksetSize(size) => write!(f, "invalid chunkset size: {}B, expected: {}B", size, ChunkSet::SIZE),
+            DecdsError::InvalidChunksetSize(size) => write!(f, "invalid chunkset size: {}B, expected: {}B", size, ChunkSet::BYTE_LENGTH),
             DecdsError::InvalidChunkMetadata(chunkset_id) => write!(f, "invalid chunk for chunkset {}", chunkset_id),
             DecdsError::InvalidProofInChunk(chunkset_id) => write!(f, "invalid proof carrying chunk for chunkset {}", chunkset_id),
             DecdsError::ChunkDecodingFailed(chunkset_id, err) => write!(f, "decoding chunk for chunkset {} failed: {}", chunkset_id, err),
