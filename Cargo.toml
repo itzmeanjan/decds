@@ -2,6 +2,16 @@
 members = ["decds-lib", "decds-bin"]
 resolver = "3"
 
+[workspace.dependencies]
+blake3 = { version = "=1.8.2", features = ["serde"] }
+rlnc = { version = "=0.4.0" }
+rand = "=0.9.1"
+serde = { version = "=1.0.219", features = ["derive"] }
+bincode = { version = "=2.0.1", features = ["serde"] }
+rayon = "=1.10.0"
+clap = { version = "=4.5.41", features = ["derive"] }
+const-hex = "=1.14.1"
+
 [profile.optimized]
 inherits = "release"
 codegen-units = 1

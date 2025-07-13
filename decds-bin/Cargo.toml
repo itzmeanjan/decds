@@ -7,8 +7,8 @@ description = "A Distribued Erasure-Coded Data Storage System"
 rust-version = "1.85.0"
 
 [dependencies]
-clap = { version = "=4.5.41", features = ["derive"] }
-rand = "=0.9.1"
-const-hex = "=1.14.1"
-blake3 = { version = "=1.8.2" }
+clap = { workspace = true }
+rand = { workspace = true }
+const-hex = { workspace = true }
+blake3 = { workspace = true }
 decds-lib = { version = "=0.1.0", path = "../decds-lib" }
