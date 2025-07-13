@@ -109,7 +109,7 @@ impl MerkleTree {
             current_index /= 2;
             current_level = parent_level;
 
-            zero_hash = blake3::Hasher::new().update(zero_hash.as_bytes()).update(zero_hash.as_bytes()).finalize();
+            zero_hash = Self::parent_hash(zero_hash.as_bytes(), zero_hash.as_bytes());
         }
 
         Ok(proof)
