@@ -214,7 +214,7 @@ mod tests {
         DecdsError,
         chunk::ProofCarryingChunk,
         chunkset::{ChunkSet, RepairingChunkSet},
-        merkle_tree::tests::flip_a_bit,
+        merkle_tree::{MerkleTree, tests::flip_a_bit},
     };
     use rand::{Rng, seq::SliceRandom};
 
@@ -315,6 +315,144 @@ mod tests {
     }
 
     #[test]
+    fn test_chunkset_append_blob_inclusion_proof_unit() {
+        let mut rng = rand::rng();
+
+        // 1. Create a base ChunkSet
+        let data_for_chunkset = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let mut chunkset_1 = ChunkSet::new(1, data_for_chunkset.clone()).expect("Must be able to build erasure-coded ChunkSet");
+        let chunkset_1_commitment = chunkset_1.get_root_commitment();
+
+        // 2. Create mock blob-level Merkle tree leaves (chunkset roots)
+        // This mock tree will have chunkset_1_commitment at index 1
+        let mock_blob_leaves = vec![
+            blake3::hash(b"dummy_chunkset_root_0"), // Leaf 0
+            chunkset_1_commitment,                  // Leaf 1 (our chunkset_1's commitment)
+            blake3::hash(b"dummy_chunkset_root_2"), // Leaf 2
+            blake3::hash(b"dummy_chunkset_root_3"), // Leaf 3
+        ];
+
+        // 3. Build a mock blob MerkleTree
+        let mock_blob_merkle_tree = MerkleTree::new(mock_blob_leaves).expect("Must be able to build mock blob Merkle Tree");
+        let mock_blob_root_commitment = mock_blob_merkle_tree.get_root_commitment();
+
+        // 4. Generate the blob_proof for chunkset_1_commitment at its index (1)
+        let blob_proof_for_chunkset_1 = mock_blob_merkle_tree.generate_proof(1).expect("Must be able to generate blob proof");
+
+        // Take a chunk for validation BEFORE appending the blob proof
+        let chunk_before_append = chunkset_1.get_chunk(0).unwrap().clone();
+        // It should NOT validate against the blob root commitment yet because it doesn't have the blob proof
+        assert!(!chunk_before_append.validate_inclusion_in_blob(mock_blob_root_commitment));
+
+        // 5. Call the method under test: append_blob_inclusion_proof
+        chunkset_1.append_blob_inclusion_proof(&blob_proof_for_chunkset_1);
+
+        // 6. Verify the outcome using a chunk from the modified chunkset
+        let chunk_after_append = chunkset_1.get_chunk(0).unwrap();
+
+        // 7. Assert that validate_inclusion_in_blob now returns true
+        assert!(chunk_after_append.validate_inclusion_in_blob(mock_blob_root_commitment));
+
+        // Test with an empty blob_proof (should not change anything, i.e., validation still works)
+        chunkset_1.append_blob_inclusion_proof(&[]);
+        let chunk_after_empty_append = chunkset_1.get_chunk(0).unwrap();
+        assert!(chunk_after_empty_append.validate_inclusion_in_blob(mock_blob_root_commitment));
+
+        // Negative test: Tamper the proof and verify it fails
+        let mut tampered_blob_proof = blob_proof_for_chunkset_1.clone();
+        if !tampered_blob_proof.is_empty() {
+            // Flip a bit in the first hash of the proof to tamper it
+            let random_byte_index = rng.random_range(0..blake3::OUT_LEN);
+            let random_bit_index = rng.random_range(0..u8::BITS) as usize;
+
+            let mut bytes = [0u8; blake3::OUT_LEN];
+            bytes.copy_from_slice(tampered_blob_proof[0].as_bytes());
+            bytes[random_byte_index] = flip_a_bit(bytes[random_byte_index], random_bit_index);
+
+            tampered_blob_proof[0] = blake3::Hash::from_bytes(bytes);
+        }
+
+        let mut chunkset_1 = ChunkSet::new(1, data_for_chunkset).expect("Must be able to build erasure-coded ChunkSet");
+        chunkset_1.append_blob_inclusion_proof(&tampered_blob_proof);
+
+        let tampered_chunk = chunkset_1.get_chunk(0).unwrap();
+        assert!(!tampered_chunk.validate_inclusion_in_blob(mock_blob_root_commitment));
+    }
+
+    #[test]
+    fn test_repairing_chunkset_new() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+        let commitment = chunkset.get_root_commitment();
+        let chunkset_id = 0;
+
+        let repairing_chunkset = RepairingChunkSet::new(chunkset_id, commitment);
+
+        assert_eq!(repairing_chunkset.chunkset_id, chunkset_id);
+        assert_eq!(repairing_chunkset.commitment, commitment);
+        assert!(!repairing_chunkset.is_ready_to_repair());
+    }
+
+    #[test]
+    fn test_repairing_chunkset_add_chunk_invalid_proof_in_chunk() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+
+        // Create a repairing chunkset with a *different* commitment
+        let tampered_commitment = blake3::hash(b"tampered_commitment");
+        let mut repairing_chunkset = RepairingChunkSet::new(0, tampered_commitment);
+
+        // Get a valid chunk from the original chunkset
+        let valid_chunk = chunkset.get_chunk(0).unwrap();
+
+        // Adding this valid chunk to a repairing_chunkset with a tampered commitment should fail
+        assert_eq!(
+            repairing_chunkset.add_chunk(valid_chunk).unwrap_err(),
+            DecdsError::InvalidProofInChunk(valid_chunk.get_chunkset_id())
+        );
+    }
+
+    #[test]
+    fn test_repairing_chunkset_add_chunk_unvalidated_invalid_chunk_metadata() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+
+        let chunk_from_chunkset_0 = chunkset.get_chunk(0).unwrap();
+
+        // Create a repairing chunkset for a different ID (e.g., ID 1 instead of 0)
+        let mut repairing_chunkset = RepairingChunkSet::new(1, chunkset.get_root_commitment());
+
+        // Attempt to add a chunk that belongs to chunkset_id 0 to a repairing_chunkset for chunkset_id 1
+        assert_eq!(
+            repairing_chunkset.add_chunk_unvalidated(chunk_from_chunkset_0).unwrap_err(),
+            DecdsError::InvalidChunkMetadata(chunk_from_chunkset_0.get_chunkset_id())
+        );
+    }
+
+    #[test]
+    fn test_repairing_chunkset_repair_when_not_ready() {
+        let mut rng = rand::rng();
+
+        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
+        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
+        let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
+
+        // Add fewer than NUM_ORIGINAL_CHUNKS chunks
+        for i in 0..(ChunkSet::NUM_ORIGINAL_CHUNKS - 1) {
+            repairing_chunkset.add_chunk(chunkset.get_chunk(i).unwrap()).unwrap();
+        }
+
+        assert!(!repairing_chunkset.is_ready_to_repair());
+        assert_eq!(repairing_chunkset.repair(), Err(DecdsError::ChunksetNotYetReadyToRepair(0)));
+    }
+
+    #[test]
     fn test_repairing_chunkset_add_chunk_after_ready_to_repair() {
         let mut rng = rand::rng();
 
@@ -339,22 +477,5 @@ mod tests {
 
         let repaired_chunkset = repairing_chunkset.repair().expect("Must be able to repair chunkset");
         assert_eq!(repaired_chunkset, data);
-    }
-
-    #[test]
-    fn test_repairing_chunkset_repair_not_ready() {
-        let mut rng = rand::rng();
-
-        let data = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
-        let chunkset = ChunkSet::new(0, data).expect("Must be able to build erasure-coded ChunkSet");
-        let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
-
-        // Add fewer than NUM_ORIGINAL_CHUNKS chunks
-        for i in 0..(ChunkSet::NUM_ORIGINAL_CHUNKS - 1) {
-            repairing_chunkset.add_chunk(chunkset.get_chunk(i).unwrap()).unwrap();
-        }
-
-        assert!(!repairing_chunkset.is_ready_to_repair());
-        assert_eq!(repairing_chunkset.repair(), Err(DecdsError::ChunksetNotYetReadyToRepair(0)));
     }
 }

@@ -169,3 +169,65 @@ impl ProofCarryingChunk {
             .map_err(|err| DecdsError::ProofCarryingChunkDeserializationFailed(err.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blake3;
+    use rand::Rng;
+
+    #[test]
+    fn test_chunk_digest() {
+        let chunkset_id = 1;
+        let chunk_id = 5;
+        let erasure_coded_data = vec![1, 2, 3, 4, 5];
+
+        let chunk = Chunk::new(chunkset_id, chunk_id, erasure_coded_data.clone());
+        let computed_digest = chunk.digest();
+
+        // Manually compute the expected digest
+        let expected_digest = blake3::Hasher::new()
+            .update(&chunkset_id.to_le_bytes())
+            .update(&chunk_id.to_le_bytes())
+            .update(&erasure_coded_data)
+            .finalize();
+
+        assert_eq!(computed_digest, expected_digest);
+
+        // Test with different data to ensure digest changes
+        let chunk2 = Chunk::new(chunkset_id, chunk_id, vec![6, 7, 8]);
+        assert_ne!(chunk2.digest(), expected_digest);
+    }
+
+    #[test]
+    fn test_proof_carrying_chunk_serialization_deserialization() {
+        let mut rng = rand::rng();
+
+        let chunkset_id = 0;
+        let chunk_id = 5;
+        let erasure_coded_data: Vec<u8> = (0..Chunk::BYTE_LENGTH).map(|_| rng.random()).collect();
+
+        // Generate a proof with a length consistent with ChunkSet::PROOF_SIZE
+        let proof_data = (0..ChunkSet::PROOF_SIZE)
+            .map(|_| {
+                let random_bytes: [u8; 32] = rng.random();
+                blake3::Hash::from_bytes(random_bytes)
+            })
+            .collect::<Vec<blake3::Hash>>();
+
+        let original_chunk = Chunk::new(chunkset_id, chunk_id, erasure_coded_data);
+        let original_pcc = ProofCarryingChunk::new(original_chunk.clone(), proof_data.clone());
+
+        // Test serialization
+        let serialized_pcc_bytes = original_pcc.to_bytes().expect("Serialization failed");
+
+        // Test deserialization
+        let (deserialized_pcc, bytes_read) = ProofCarryingChunk::from_bytes(&serialized_pcc_bytes).expect("Deserialization failed");
+
+        assert_eq!(original_pcc, deserialized_pcc);
+        assert_eq!(serialized_pcc_bytes.len(), bytes_read);
+
+        // Test deserialization with lesser bytes
+        assert!(ProofCarryingChunk::from_bytes(&serialized_pcc_bytes[..(serialized_pcc_bytes.len() / 2)]).is_err());
+    }
+}

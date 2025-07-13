@@ -14,7 +14,7 @@ use std::{collections::HashMap, ops::RangeBounds, usize};
 /// Represents the header of a `Blob`, containing essential metadata about the blob's
 /// structure and cryptographic commitments. This is essentially what is used during
 /// validity checking and repairing of erasure-coded chunks.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct BlobHeader {
     byte_length: usize,
     num_chunksets: usize,
@@ -475,7 +475,8 @@ impl RepairingBlob {
 
 #[cfg(test)]
 mod tests {
-    use crate::{blob::Blob, consts};
+    use crate::{BlobHeader, ProofCarryingChunk, RepairingBlob, blob::Blob, chunkset::ChunkSet, consts, errors::DecdsError};
+    use blake3;
     use rand::Rng;
 
     #[test]
@@ -500,5 +501,338 @@ mod tests {
                     .all(|share| blob_header.validate_chunk(&share))
             );
         });
+    }
+
+    #[test]
+    fn test_get_chunkset_commitment() {
+        let mut rng = rand::rng();
+
+        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+
+        let blob = Blob::new(blob_data).unwrap();
+        let header = blob.get_blob_header();
+
+        // Valid chunkset ID
+        let commitment = header.get_chunkset_commitment(0);
+        assert!(commitment.is_ok());
+
+        let commitment = header.get_chunkset_commitment(1);
+        assert!(commitment.is_ok());
+
+        // Invalid chunkset ID
+        let err = header.get_chunkset_commitment(header.get_num_chunksets());
+        assert_eq!(err, Err(DecdsError::InvalidChunksetId(header.get_num_chunksets(), header.get_num_chunksets())));
+    }
+
+    #[test]
+    fn test_get_chunkset_size() {
+        let mut rng = rand::rng();
+
+        // Blob size: 2.5 chunksets -> 2 full, 1 half
+        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+
+        let blob = Blob::new(blob_data).unwrap();
+        let header = blob.get_blob_header();
+
+        // Full chunkset
+        assert_eq!(header.get_chunkset_size(0).unwrap(), ChunkSet::BYTE_LENGTH);
+        assert_eq!(header.get_chunkset_size(1).unwrap(), ChunkSet::BYTE_LENGTH);
+
+        // Partial chunkset
+        assert_eq!(header.get_chunkset_size(2).unwrap(), ChunkSet::BYTE_LENGTH / 2);
+
+        // Invalid chunkset ID
+        assert_eq!(
+            header.get_chunkset_size(header.get_num_chunksets()).unwrap_err(),
+            DecdsError::InvalidChunksetId(header.get_num_chunksets(), header.get_num_chunksets())
+        );
+    }
+
+    #[test]
+    fn test_get_byte_range_for_chunkset() {
+        let mut rng = rand::rng();
+
+        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+
+        let blob = Blob::new(blob_data).unwrap();
+        let header = blob.get_blob_header();
+
+        // First chunkset
+        assert_eq!(header.get_byte_range_for_chunkset(0).unwrap(), (0, ChunkSet::BYTE_LENGTH));
+
+        // Second chunkset
+        assert_eq!(
+            header.get_byte_range_for_chunkset(1).unwrap(),
+            (ChunkSet::BYTE_LENGTH, ChunkSet::BYTE_LENGTH * 2)
+        );
+
+        // Last (partial) chunkset
+        assert_eq!(header.get_byte_range_for_chunkset(2).unwrap(), (ChunkSet::BYTE_LENGTH * 2, blob_byte_len));
+
+        // Invalid chunkset ID
+        assert_eq!(
+            header.get_byte_range_for_chunkset(header.get_num_chunksets()).unwrap_err(),
+            DecdsError::InvalidChunksetId(header.get_num_chunksets(), header.get_num_chunksets())
+        );
+    }
+
+    #[test]
+    fn test_get_chunkset_ids_for_byte_range() {
+        let mut rng = rand::rng();
+
+        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+
+        let blob = Blob::new(blob_data).unwrap();
+        let header = blob.get_blob_header();
+
+        // Range within a single chunkset
+        assert_eq!(header.get_chunkset_ids_for_byte_range(0..10).unwrap(), vec![0]);
+        assert_eq!(
+            header
+                .get_chunkset_ids_for_byte_range(ChunkSet::BYTE_LENGTH + 10..ChunkSet::BYTE_LENGTH + 20)
+                .unwrap(),
+            vec![1]
+        );
+
+        // Range spanning multiple chunksets
+        assert_eq!(
+            header.get_chunkset_ids_for_byte_range(10..(ChunkSet::BYTE_LENGTH * 1 + 10)).unwrap(),
+            vec![0, 1]
+        );
+        assert_eq!(header.get_chunkset_ids_for_byte_range(10..blob_byte_len).unwrap(), vec![0, 1, 2]);
+
+        // Range exactly matching chunkset boundaries
+        assert_eq!(header.get_chunkset_ids_for_byte_range(0..ChunkSet::BYTE_LENGTH).unwrap(), vec![0]);
+        assert_eq!(header.get_chunkset_ids_for_byte_range(0..=(ChunkSet::BYTE_LENGTH - 1)).unwrap(), vec![0]);
+
+        // Edge cases for bounds
+        assert_eq!(header.get_chunkset_ids_for_byte_range(0..0).unwrap_err(), DecdsError::InvalidEndBound(0));
+        assert_eq!(header.get_chunkset_ids_for_byte_range(0..=0).unwrap(), vec![0]); // Covers first byte of first chunkset
+
+        // Invalid end bound (range beyond blob size)
+        let end_beyond_blob = header.get_blob_size() + ChunkSet::BYTE_LENGTH;
+        let expected_end_chunkset_id = end_beyond_blob.saturating_sub(1) / ChunkSet::BYTE_LENGTH;
+        assert_eq!(
+            header.get_chunkset_ids_for_byte_range(0..end_beyond_blob).unwrap_err(),
+            DecdsError::InvalidChunksetId(expected_end_chunkset_id, header.get_num_chunksets())
+        );
+
+        // Test for `InvalidEndBound(usize::MAX)` for unbounded ranges
+        assert_eq!(header.get_chunkset_ids_for_byte_range(..).unwrap_err(), DecdsError::InvalidEndBound(usize::MAX));
+        assert_eq!(
+            header.get_chunkset_ids_for_byte_range(0..).unwrap_err(),
+            DecdsError::InvalidEndBound(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn test_blob_header_serialization_deserialization() {
+        let mut rng = rand::rng();
+
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 3;
+        let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
+
+        let blob = Blob::new(blob_data).unwrap();
+        let original_header = blob.get_blob_header().clone();
+
+        let serialized_header = original_header.to_bytes().expect("Header serialization failed");
+        let (deserialized_header, bytes_read) = BlobHeader::from_bytes(&serialized_header).expect("Header deserialization failed");
+
+        assert_eq!(original_header, deserialized_header);
+        assert_eq!(serialized_header.len(), bytes_read);
+
+        // Test deserialization failure with lesser bytes
+        assert!(BlobHeader::from_bytes(&serialized_header[..(serialized_header.len() / 2)]).is_err());
+    }
+
+    #[test]
+    fn test_blob_new_empty_data() {
+        assert_eq!(Blob::new(Vec::new()).err(), Some(DecdsError::EmptyDataForBlob));
+    }
+
+    #[test]
+    fn test_blob_get_share_invalid_id() {
+        let mut rng = rand::rng();
+
+        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2)).map(|_| rng.random()).collect();
+        let blob = Blob::new(blob_data).unwrap();
+
+        // Test with an invalid share ID (out of bounds)
+        let invalid_share_id = consts::DECDS_NUM_ERASURE_CODED_SHARES;
+        assert_eq!(
+            blob.get_share(invalid_share_id).unwrap_err(),
+            DecdsError::InvalidErasureCodedShareId(invalid_share_id)
+        );
+
+        // Test with a very large invalid share ID
+        let large_invalid_share_id = consts::DECDS_NUM_ERASURE_CODED_SHARES + 100;
+        assert_eq!(
+            blob.get_share(large_invalid_share_id).unwrap_err(),
+            DecdsError::InvalidErasureCodedShareId(large_invalid_share_id)
+        );
+    }
+
+    #[test]
+    fn test_repairing_blob_new() {
+        let mut rng = rand::rng();
+
+        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2)).map(|_| rng.random()).collect();
+        let blob = Blob::new(blob_data).unwrap();
+        let header = blob.get_blob_header().clone();
+
+        let repairer = RepairingBlob::new(header.clone());
+
+        assert_eq!(repairer.header.get_blob_size(), header.get_blob_size());
+        assert_eq!(repairer.header.get_num_chunksets(), header.get_num_chunksets());
+        assert_eq!(repairer.body.len(), header.get_num_chunksets());
+
+        for i in 0..header.get_num_chunksets() {
+            assert!(repairer.body.get(&i).unwrap().is_some());
+
+            assert!(!repairer.is_chunkset_ready_to_repair(i).unwrap());
+            assert!(!repairer.is_chunkset_already_repaired(i).unwrap());
+        }
+    }
+
+    #[test]
+    fn test_repairing_blob_add_chunk() {
+        let mut rng = rand::rng();
+
+        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2)).map(|_| rng.random()).collect(); // Two full chunksets
+        let blob = Blob::new(blob_data).unwrap();
+
+        let blob_header = blob.get_blob_header().clone();
+        let mut repairer = RepairingBlob::new(blob_header.clone());
+
+        let all_chunks: Vec<ProofCarryingChunk> = (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
+            .flat_map(|share_id| blob.get_share(share_id).unwrap())
+            .collect();
+
+        // Test valid chunk addition
+        let chunk_to_add = &all_chunks[0];
+        assert!(repairer.add_chunk(chunk_to_add).is_ok());
+
+        // Simulate an invalid chunk proof by creating a new header with a different root commitment
+        let mut invalid_header = blob_header.clone();
+        invalid_header.root_commitment = blake3::hash(b"fake_root_commitment");
+
+        let mut repairer_invalid_header = RepairingBlob::new(invalid_header);
+        assert_eq!(
+            repairer_invalid_header.add_chunk(chunk_to_add).unwrap_err(),
+            DecdsError::InvalidProofInChunk(chunk_to_add.get_chunkset_id())
+        );
+
+        // Add enough chunks to make a chunkset ready for repair
+        let mut repairer_ready = RepairingBlob::new(blob_header.clone());
+        let chunkset_id = all_chunks[0].get_chunkset_id();
+
+        for chunk in &all_chunks {
+            if chunk.get_chunkset_id() == chunkset_id {
+                repairer_ready.add_chunk(chunk).unwrap();
+
+                if repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap() {
+                    break;
+                }
+            }
+        }
+
+        assert!(repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap());
+
+        // Try adding another chunk to a chunkset already ready for repair
+        let extra_chunk = &all_chunks
+            .iter()
+            .find(|c| c.get_chunkset_id() == chunkset_id && c.get_global_chunk_id() != all_chunks[0].get_global_chunk_id())
+            .unwrap();
+
+        assert_eq!(
+            repairer_ready.add_chunk(extra_chunk).unwrap_err(),
+            DecdsError::ChunksetReadyToRepair(chunkset_id)
+        );
+
+        // Repair the chunkset, then try adding a chunk to it
+        repairer_ready.get_repaired_chunkset(chunkset_id).unwrap();
+
+        assert!(!repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap());
+        assert!(repairer_ready.is_chunkset_already_repaired(chunkset_id).unwrap());
+        assert_eq!(
+            repairer_ready.add_chunk(chunk_to_add).unwrap_err(),
+            DecdsError::ChunksetAlreadyRepaired(chunkset_id)
+        );
+    }
+
+    #[test]
+    fn test_repairing_blob_get_repaired_chunkset() {
+        let mut rng = rand::rng();
+
+        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2)).map(|_| rng.random()).collect();
+        let blob = Blob::new(blob_data.clone()).unwrap();
+
+        let blob_header = blob.get_blob_header().clone();
+        let mut repairer = RepairingBlob::new(blob_header.clone());
+
+        let all_chunks: Vec<ProofCarryingChunk> = (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
+            .flat_map(|share_id| blob.get_share(share_id).unwrap())
+            .collect();
+
+        // Test `ChunksetNotYetReadyToRepair`
+        let chunkset_id_0 = 0;
+        assert_eq!(
+            repairer.get_repaired_chunkset(chunkset_id_0).unwrap_err(),
+            DecdsError::ChunksetNotYetReadyToRepair(chunkset_id_0)
+        );
+
+        // Add enough chunks for the first chunkset
+        for chunk in &all_chunks {
+            if chunk.get_chunkset_id() == chunkset_id_0 {
+                repairer.add_chunk(chunk).unwrap();
+
+                if repairer.is_chunkset_ready_to_repair(chunkset_id_0).unwrap() {
+                    break;
+                }
+            }
+        }
+        assert!(repairer.is_chunkset_ready_to_repair(chunkset_id_0).unwrap());
+
+        // Test successful repair
+        let repaired_data_0 = repairer.get_repaired_chunkset(chunkset_id_0).unwrap();
+        let expected_data_0 = blob_data[0..ChunkSet::BYTE_LENGTH].to_vec();
+
+        assert_eq!(repaired_data_0, expected_data_0);
+        assert!(repairer.is_chunkset_already_repaired(chunkset_id_0).unwrap());
+
+        // Test `ChunksetAlreadyRepaired`
+        assert_eq!(
+            repairer.get_repaired_chunkset(chunkset_id_0).unwrap_err(),
+            DecdsError::ChunksetAlreadyRepaired(chunkset_id_0)
+        );
+
+        // Test for a partial last chunkset
+        let chunkset_id_2 = 2;
+
+        for chunk in &all_chunks {
+            if chunk.get_chunkset_id() == chunkset_id_2 {
+                repairer.add_chunk(chunk).unwrap();
+
+                if repairer.is_chunkset_ready_to_repair(chunkset_id_2).unwrap() {
+                    break;
+                }
+            }
+        }
+        assert!(repairer.is_chunkset_ready_to_repair(chunkset_id_2).unwrap());
+
+        let repaired_data_2 = repairer.get_repaired_chunkset(chunkset_id_2).unwrap();
+        let expected_data_2 = blob_data[ChunkSet::BYTE_LENGTH * 2..].to_vec();
+        assert_eq!(repaired_data_2, expected_data_2);
+
+        // Test invalid chunkset ID
+        let invalid_chunkset_id = blob_header.get_num_chunksets();
+        assert_eq!(
+            repairer.get_repaired_chunkset(invalid_chunkset_id).unwrap_err(),
+            DecdsError::InvalidChunksetId(invalid_chunkset_id, blob_header.get_num_chunksets())
+        );
     }
 }
