@@ -17,82 +17,38 @@ use std::{collections::HashMap, ops::RangeBounds, usize};
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct BlobHeader {
     byte_length: usize,
-    root_commitment: blake3::Hash,
-    digest: blake3::Hash,
     num_chunksets: usize,
+    digest: blake3::Hash,
+    root_commitment: blake3::Hash,
     chunkset_root_commitments: Vec<blake3::Hash>,
 }
 
 impl BlobHeader {
-    /// Returns the Merkle root commitment of the entire blob.
-    ///
-    /// This commitment is derived from the Merkle tree of all chunksets in the blob.
-    ///
-    /// # Returns
-    ///
-    /// A `blake3::Hash` representing the root commitment.
-    pub fn get_root_commitment(&self) -> blake3::Hash {
-        self.root_commitment
-    }
-
-    /// Returns the BLAKE3 digest of the original, unpadded blob data.
-    ///
-    /// # Returns
-    ///
-    /// A `blake3::Hash` representing the blob's digest.
-    pub fn get_blob_digest(&self) -> blake3::Hash {
-        self.digest
-    }
-
     /// Returns the original byte length of the blob data before padding.
-    ///
-    /// # Returns
-    ///
-    /// A `usize` indicating the original size of the blob in bytes.
     pub fn get_blob_size(&self) -> usize {
         self.byte_length
     }
 
     /// Returns the total number of chunksets that comprise the blob.
-    ///
-    /// # Returns
-    ///
-    /// A `usize` indicating the number of chunksets.
     pub fn get_num_chunksets(&self) -> usize {
         self.num_chunksets
     }
 
-    /// Calculates the effective byte length of a specific chunkset within the blob.
-    /// This accounts for the last chunkset potentially being smaller than `ChunkSet::SIZE`.
-    ///
-    /// # Arguments
-    ///
-    /// * `chunkset_id` - The ID of the chunkset whose size is to be determined.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` which is:
-    /// - `Ok(usize)` containing the effective byte length of the chunkset if successful.
-    /// - `Err(DecdsError::InvalidChunksetId)` if `chunkset_id` is out of bounds.
-    pub fn get_chunkset_size(&self, chunkset_id: usize) -> Result<usize, DecdsError> {
-        if chunkset_id < self.get_num_chunksets() {
-            let from = chunkset_id * ChunkSet::SIZE;
-            let to = (from + ChunkSet::SIZE).min(self.get_blob_size());
-            let effective_len = to - from;
-
-            Ok(effective_len)
-        } else {
-            Err(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
-        }
-    }
-
     /// Returns the total number of erasure-coded chunks across all chunksets in the blob.
-    ///
-    /// # Returns
-    ///
-    /// A `usize` indicating the total number of chunks.
     pub fn get_num_chunks(&self) -> usize {
         self.get_num_chunksets() * chunkset::ChunkSet::NUM_ERASURE_CODED_CHUNKS
+    }
+
+    /// Returns the BLAKE3 digest of the original, unpadded blob data.
+    pub fn get_blob_digest(&self) -> blake3::Hash {
+        self.digest
+    }
+
+    /// Returns the Merkle root commitment of the entire blob.
+    ///
+    /// This commitment is derived from the Merkle tree of all chunksets in the blob.
+    pub fn get_root_commitment(&self) -> blake3::Hash {
+        self.root_commitment
     }
 
     /// Returns the Merkle root commitment of a specific chunkset within the blob.
@@ -107,14 +63,37 @@ impl BlobHeader {
     /// - `Ok(blake3::Hash)` containing the root commitment of the specified chunkset if successful.
     /// - `Err(DecdsError::InvalidChunksetId)` if `chunkset_id` is out of bounds.
     pub fn get_chunkset_commitment(&self, chunkset_id: usize) -> Result<blake3::Hash, DecdsError> {
+        self.chunkset_root_commitments
+            .get(chunkset_id)
+            .and_then(|&v| Some(v))
+            .ok_or(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
+    }
+
+    /// Calculates the effective byte length of a specific chunkset within the blob.
+    /// This accounts for the last chunkset potentially being smaller than `ChunkSet::BYTE_LENGTH`.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunkset_id` - The ID of the chunkset whose size is to be determined.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` which is:
+    /// - `Ok(usize)` containing the effective byte length of the chunkset if successful.
+    /// - `Err(DecdsError::InvalidChunksetId)` if `chunkset_id` is out of bounds.
+    pub fn get_chunkset_size(&self, chunkset_id: usize) -> Result<usize, DecdsError> {
         if chunkset_id < self.get_num_chunksets() {
-            Ok(self.chunkset_root_commitments[chunkset_id])
+            let from = chunkset_id * ChunkSet::BYTE_LENGTH;
+            let to = (from + ChunkSet::BYTE_LENGTH).min(self.get_blob_size());
+            let effective_len = to - from;
+
+            Ok(effective_len)
         } else {
             Err(DecdsError::InvalidChunksetId(chunkset_id, self.get_num_chunksets()))
         }
     }
 
-    /// Returns the full byte range (start, end) of a specific chunkset as it would appear
+    /// Returns the full byte range `[start, end)` of a specific chunkset as it would appear
     /// in the zero-padded blob data.
     ///
     /// # Arguments
@@ -124,12 +103,12 @@ impl BlobHeader {
     /// # Returns
     ///
     /// Returns a `Result` which is:
-    /// - `Ok((usize, usize))` containing a tuple `(start_byte, end_byte)` if successful.
+    /// - `Ok((usize, usize))` containing a tuple `[start_byte_idx, end_byte_idx)` if successful.
     /// - `Err(DecdsError::InvalidChunksetId)` if `chunkset_id` is out of bounds.
     pub fn get_byte_range_for_chunkset(&self, chunkset_id: usize) -> Result<(usize, usize), DecdsError> {
         if chunkset_id < self.get_num_chunksets() {
-            let from = chunkset_id * ChunkSet::SIZE;
-            let to = from + ChunkSet::SIZE;
+            let from = chunkset_id * ChunkSet::BYTE_LENGTH;
+            let to = (from + ChunkSet::BYTE_LENGTH).min(self.get_blob_size());
 
             Ok((from, to))
         } else {
@@ -169,8 +148,8 @@ impl BlobHeader {
             _ => return Err(DecdsError::InvalidEndBound(usize::MAX)),
         };
 
-        let start_chunkset_id = start / ChunkSet::SIZE;
-        let end_chunkset_id = end / ChunkSet::SIZE;
+        let start_chunkset_id = start / ChunkSet::BYTE_LENGTH;
+        let end_chunkset_id = end / ChunkSet::BYTE_LENGTH;
 
         if end_chunkset_id >= self.get_num_chunksets() {
             return Err(DecdsError::InvalidChunksetId(end_chunkset_id, self.get_num_chunksets()));
@@ -236,8 +215,8 @@ impl BlobHeader {
     }
 }
 
-/// Represents a complete, prepared blob of data, consisting of a `BlobHeader`
-/// and a collection of `ChunkSet`s, each of which are holding 16 erasure-coded chunks.
+/// Represents a complete, erasure-coded blob of data, consisting of a `BlobHeader` and a collection of `ChunkSet`s,
+/// each of which are holding 16 erasure-coded proof-of-inclusion carrying chunks.
 pub struct Blob {
     header: BlobHeader,
     body: Vec<chunkset::ChunkSet>,
@@ -247,7 +226,7 @@ impl Blob {
     /// Creates a new `Blob` from raw byte data.
     ///
     /// This involves:
-    /// 1. Calculating the blob's digest and padding its length to a multiple of `ChunkSet::SIZE`.
+    /// 1. Calculating the blob's digest and padding its length to a multiple of `ChunkSet::BYTE_LENGTH`.
     /// 2. Dividing the data into `ChunkSet`s and erasure-coding them individually.
     /// 3. Building a Merkle tree over the chunksets' root commitments to create the blob's root commitment.
     /// 4. Appending blob-level Merkle proofs to each chunk within the chunksets.
@@ -270,17 +249,17 @@ impl Blob {
         let blob_digest = blake3::hash(&data);
         let blob_length = data.len();
 
-        let num_chunksets = blob_length.div_ceil(chunkset::ChunkSet::SIZE);
-        let zero_padded_blob_len = num_chunksets * chunkset::ChunkSet::SIZE;
+        let num_chunksets = blob_length.div_ceil(chunkset::ChunkSet::BYTE_LENGTH);
+        let zero_padded_blob_len = num_chunksets * chunkset::ChunkSet::BYTE_LENGTH;
         data.resize(zero_padded_blob_len, 0);
 
         let mut chunksets = (0..num_chunksets)
             .into_par_iter()
             .map(|chunkset_id| {
-                let offset = chunkset_id * chunkset::ChunkSet::SIZE;
-                let till = offset + chunkset::ChunkSet::SIZE;
+                let offset = chunkset_id * chunkset::ChunkSet::BYTE_LENGTH;
+                let till = offset + chunkset::ChunkSet::BYTE_LENGTH;
 
-                unsafe { chunkset::ChunkSet::new(offset, chunkset_id, data[offset..till].to_vec()).unwrap_unchecked() }
+                unsafe { chunkset::ChunkSet::new(chunkset_id, data[offset..till].to_vec()).unwrap_unchecked() }
             })
             .collect::<Vec<chunkset::ChunkSet>>();
 
@@ -296,9 +275,9 @@ impl Blob {
         Ok(Blob {
             header: BlobHeader {
                 byte_length: blob_length,
-                root_commitment: commitment,
+                num_chunksets,
                 digest: blob_digest,
-                num_chunksets: num_chunksets,
+                root_commitment: commitment,
                 chunkset_root_commitments: chunksets.iter().map(|chunkset| chunkset.get_root_commitment()).collect(),
             },
             body: chunksets,
@@ -306,10 +285,6 @@ impl Blob {
     }
 
     /// Returns a reference to the `BlobHeader` of this blob.
-    ///
-    /// # Returns
-    ///
-    /// A `&BlobHeader` reference.
     pub fn get_blob_header(&self) -> &BlobHeader {
         &self.header
     }
@@ -342,7 +317,7 @@ impl Blob {
     }
 }
 
-/// Represents a blob that is in the process of being repaired or reconstructed
+/// Represents a blob that is in the process of being incrementally repaired or reconstructed
 /// from received `ProofCarryingChunk`s.
 pub struct RepairingBlob {
     header: BlobHeader,
