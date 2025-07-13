@@ -1,18 +1,17 @@
 use crate::{chunkset::ChunkSet, consts::DECDS_BINCODE_CONFIG, errors::DecdsError, merkle_tree::MerkleTree};
 use serde::{Deserialize, Serialize};
 
-/// Represents a fixed-size (1MB = 2^20 bytes) data chunk within a chunkset.
-/// It contains metadata about its origin and the erasure-coded data.
+/// Represents a fixed-size (1MB = 2^20 bytes) data chunk within a chunkset in erasure-coded form.
+/// It contains metadata about its origin and the RLNC erasure-coded data.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Chunk {
     chunkset_id: usize,
     chunk_id: usize,
-    offset: usize,
     erasure_coded_data: Vec<u8>,
 }
 
 impl Chunk {
-    pub const SIZE: usize = 1usize << 20;
+    pub const BYTE_LENGTH: usize = 1usize << 20;
 
     /// Creates a new `Chunk` instance.
     ///
@@ -20,22 +19,20 @@ impl Chunk {
     ///
     /// * `chunkset_id` - The ID of the chunkset this chunk belongs to.
     /// * `chunk_id` - The global ID of this chunk.
-    /// * `offset` - The starting byte offset of the chunkset within the original blob data.
-    /// * `erasure_coded_data` - The erasure-coded data payload of the chunk.
+    /// * `erasure_coded_data` - The RLNC erasure-coded data payload of the chunk.
     ///
     /// # Returns
     ///
     /// Returns a new `Chunk` instance.
-    pub fn new(chunkset_id: usize, chunk_id: usize, offset: usize, erasure_coded_data: Vec<u8>) -> Self {
+    pub fn new(chunkset_id: usize, chunk_id: usize, erasure_coded_data: Vec<u8>) -> Self {
         Chunk {
             chunkset_id,
             chunk_id,
-            offset,
             erasure_coded_data,
         }
     }
 
-    /// Computes the BLAKE3 digest of the chunk, based on its metadata and erasure-coded data.
+    /// Computes the BLAKE3 digest of the byte serialized representation of this chunk.
     ///
     /// # Returns
     ///
@@ -50,7 +47,7 @@ impl Chunk {
 }
 
 /// Represents a `Chunk` augmented with a Merkle proof of its inclusion in the original blob.
-/// This structure is used for verifiable data retrieval.
+/// This structure is used for verifiable data retrieval and reconstruction.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct ProofCarryingChunk {
     chunk: Chunk,
@@ -63,20 +60,23 @@ impl ProofCarryingChunk {
     /// # Arguments
     ///
     /// * `chunk` - The underlying `Chunk` data.
-    /// * `proof` - A `Vec<blake3::Hash>` representing the Merkle proof for this chunk within its chunkset.
+    /// * `proof` - A `Vec<blake3::Hash>` representing the Merkle inclusion proof for this chunk within its chunkset.
     ///
-    /// # Panics
+    /// # Assumes
     ///
-    /// Panics if the `proof.len()` does not match `ChunkSet::PROOF_SIZE`.
+    /// That `proof.len()` equals to `ChunkSet::PROOF_SIZE`.
     pub(crate) fn new(chunk: Chunk, proof: Vec<blake3::Hash>) -> Self {
-        assert_eq!(proof.len(), ChunkSet::PROOF_SIZE);
         Self { chunk, proof }
     }
 
     /// Validates the inclusion of this chunk in the overall blob using the provided blob root commitment.
     ///
     /// This method verifies the Merkle proof against the blob's root commitment,
-    /// assuming the proof contains the necessary elements to ascend to the blob root.
+    /// assuming the proof contains the necessary sibling nodes to ascend to the blob root.
+    ///
+    /// Meaning `Self::append_proof_to_blob_root()` needs to be called after `Self::new()` to extend
+    /// the Merkle inclusion proof to the blob root level - only then one can validate inclusion of this
+    /// chunk in the blob.
     ///
     /// # Arguments
     ///
@@ -86,10 +86,7 @@ impl ProofCarryingChunk {
     ///
     /// Returns `true` if the chunk's inclusion proof in the blob is valid, `false` otherwise.
     pub fn validate_inclusion_in_blob(&self, blob_commitment: blake3::Hash) -> bool {
-        let leaf_index = self.chunk.chunk_id;
-        let leaf_node = self.chunk.digest();
-
-        MerkleTree::verify_proof(leaf_index, leaf_node, &self.proof, blob_commitment)
+        MerkleTree::verify_proof(self.get_global_chunk_id(), self.chunk.digest(), &self.proof, blob_commitment)
     }
 
     /// Validates the inclusion of this chunk within its specific chunkset using the provided chunkset root commitment.
@@ -104,42 +101,39 @@ impl ProofCarryingChunk {
     ///
     /// Returns `true` if the chunk's inclusion proof in its chunkset is valid, `false` otherwise.
     pub fn validate_inclusion_in_chunkset(&self, chunkset_commitment: blake3::Hash) -> bool {
-        let leaf_index = self.chunk.chunk_id % ChunkSet::NUM_ERASURE_CODED_CHUNKS;
-        let leaf_node = self.chunk.digest();
-
-        MerkleTree::verify_proof(leaf_index, leaf_node, &self.proof[..ChunkSet::PROOF_SIZE], chunkset_commitment)
+        MerkleTree::verify_proof(
+            self.get_local_chunk_id(),
+            self.chunk.digest(),
+            &self.proof[..ChunkSet::PROOF_SIZE],
+            chunkset_commitment,
+        )
     }
 
     /// Returns the ID of the chunkset this chunk belongs to.
-    ///
-    /// # Returns
-    ///
-    /// The `usize` ID of the chunkset.
     pub fn get_chunkset_id(&self) -> usize {
         self.chunk.chunkset_id
     }
 
+    /// Returns the global ID of the chunk.
+    pub fn get_global_chunk_id(&self) -> usize {
+        self.chunk.chunk_id
+    }
+
+    /// Returns the local ID of the chunk.
+    pub fn get_local_chunk_id(&self) -> usize {
+        self.chunk.chunk_id % ChunkSet::NUM_ERASURE_CODED_CHUNKS
+    }
+
     /// Returns a reference to the erasure-coded data contained within the chunk.
-    ///
-    /// # Returns
-    ///
-    /// A slice `&[u8]` containing the erasure-coded data.
     pub fn get_erasure_coded_data(&self) -> &[u8] {
         self.chunk.erasure_coded_data.as_ref()
     }
 
-    /// Returns the byte range (start, end) that this chunk covers within the original blob data.
+    /// Appends additional Merkle proof hashes to the existing proof, proving blob-level inclusion.
     ///
-    /// # Returns
-    ///
-    /// A tuple `(usize, usize)` representing the start and end byte offsets.
-    pub fn get_blob_byte_range(&self) -> (usize, usize) {
-        (self.chunk.offset, self.chunk.offset + ChunkSet::SIZE)
-    }
-
-    /// Appends additional Merkle proof hashes to the existing proof, typically for blob-level inclusion.
-    ///
-    /// This is used to extend a chunkset-level proof to a blob-level proof.
+    /// This is used to extend a chunkset-level proof to a blob-level proof. You are supposed to call this
+    /// function after `Self::new` is used to contruct a new proof-carrying chunk, which originally holds a
+    /// proof of inclusion in the corresponding chunkset.
     ///
     /// # Arguments
     ///
