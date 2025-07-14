@@ -5,6 +5,8 @@ A Distributed Erasure-Coded Data Storage System
 
 ![decds-architecture](./assets/decds-architecture_diagram.png)
 
+This design collects some inspiration from https://arxiv.org/pdf/2506.19233.
+
 > [!TIP]
 > How to use `decds`? Watch hands-on experience @ https://youtu.be/vpxDwGcd55Q.
 
@@ -147,8 +149,11 @@ Options:
   -V, --version  Print version
 ```
 
-Have a look at following terminal recording of playing with `decds`.
+Have a look at following terminal recording of playing with `decds`. You can check out a bash script, showing similar commands @ [decds-hands-on-linux](./scripts/test_decds_on_linux.sh).
 
 ![decds-hands-on-experience](./assets/decds-hands-on-experience.gif)
 
-Don't like GIF? See it on https://youtu.be/vpxDwGcd55Q or locally play the [video](./assets/decds-hands-on-experience.mp4) from [assets](./assets) directory.
+> [!TIP]
+> Don't like GIF? See it on https://youtu.be/vpxDwGcd55Q or locally play the [video](./assets/decds-hands-on-experience.mp4) from [assets](./assets) directory.
+
+After recording a terminal session with asciinema @ https://github.com/asciinema/asciinema, I use [./scripts/asciinema_pipeline.sh](./scripts/asciinema_pipeline.sh) to productionize it.
