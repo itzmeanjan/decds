@@ -14,10 +14,6 @@ clippy: ## Runs clippy showing warnings
 format: ## Formats source tree
 	cargo fmt --all
 
-.PHONY: run
-run: # Run `decds` executable
-	cargo run --profile optimized
-
 .PHONY: test
 test: ## Run all tests
 	RUST_BACKTRACE=1 cargo test --profile test-release
@@ -29,6 +25,10 @@ bench: ## Run all benchmarks
 .PHONY: coverage
 coverage: ## Generates HTML code coverage report, using `cargo-tarpaulin`
 	cargo tarpaulin -t 600 --profile test-release --out Html
+
+.PHONY: install
+install: # Installs `decds` executable in `$HOME/.cargo/bin`
+	cargo install --profile optimized --path decds-bin --locked
 
 .PHONY: clean
 clean: ## Removes cargo target directory
