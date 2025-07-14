@@ -3,7 +3,7 @@ name = "decds"
 version = "0.1.0"
 edition = "2024"
 resolver = "3"
-description = "A Distribued Erasure-Coded Data Storage System"
+description = "A Distributed Erasure-Coded Data Storage System"
 rust-version = "1.85.0"
 
 [dependencies]
