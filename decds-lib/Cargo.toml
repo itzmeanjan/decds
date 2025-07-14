@@ -1,9 +1,16 @@
 [package]
 name = "decds-lib"
-version = "0.1.0"
-edition = "2024"
+description = "A Library for Distributed Erasure-Coded Data Storage System"
 resolver = "3"
-rust-version = "1.85.0"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
 
 [dependencies]
 blake3 = { workspace = true }

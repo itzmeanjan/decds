@@ -2,6 +2,23 @@
 members = ["decds-lib", "decds-bin"]
 resolver = "3"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+authors = ["Anjan Roy <hello@itzmeanjan.in>"]
+repository = "https://github.com/itzmeanjan/decds.git"
+license = "BSD-3-Clause"
+readme = "README.md"
+keywords = [
+    "erasure-coding",
+    "merkle-tree",
+    "data-dissemination",
+    "data-verification",
+    "data-repairing",
+]
+categories = ["cryptography", "compression", "encoding"]
+
 [workspace.dependencies]
 blake3 = { version = "=1.8.2", features = ["serde"] }
 rlnc = { version = "=0.4.0" }
