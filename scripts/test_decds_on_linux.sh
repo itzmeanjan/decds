@@ -1,5 +1,8 @@
 #!/usr/bin/bash
 
+# Trap failure of any following commands
+set -e
+
 # Generate random 256MB data blob
 dd if=/dev/urandom of=random.data bs=1M count=256
 
