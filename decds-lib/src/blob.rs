@@ -215,6 +215,10 @@ impl BlobHeader {
     }
 }
 
+/// `BlobBuilder` provides an incremental way to construct a `Blob` from a stream of data.
+///
+/// This builder handles the division of input data into fixed-size `ChunkSet`s, prepares RLNC-based erasure-coded chunks,
+/// computes BLAKE3 digest of blob, and generates Merkle inclusion (in respective `Chunkset`s) proof for proof-carrying chunks.
 pub struct BlobBuilder {
     hasher: blake3::Hasher,
     num_bytes_absorbed: usize,
@@ -224,6 +228,7 @@ pub struct BlobBuilder {
 }
 
 impl BlobBuilder {
+    /// Initializes a new `BlobBuilder` - ready to build a blob.
     pub fn init() -> Self {
         BlobBuilder {
             hasher: blake3::Hasher::new(),
@@ -234,6 +239,25 @@ impl BlobBuilder {
         }
     }
 
+    /// Updates the `BlobBuilder` with new data.
+    ///
+    /// This method absorbs the provided `data` into the internal buffer. If enough
+    /// data accumulates to form a complete `ChunkSet`, it is processed (erasure-coded,
+    /// Merkle-proofed) and its resulting `ProofCarryingChunk`s are returned.
+    ///
+    /// You can call this method arbitrary number of times, before calling `Self::finalize`.
+    /// Note, you must call this method atleast once with non-empty input data, to not get
+    /// an error from `Self::finalize` - as you can't build a blob over empty input data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A byte slice containing the new data to be processed.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<Vec<ProofCarryingChunk>>`.
+    /// - `Some(Vec<ProofCarryingChunk>)` if one or more `ChunkSet`s were completed and their chunks generated. These chunks carry Merkle proof-of-inclusion in respective Chunkset.
+    /// - `None` if no complete `ChunkSet` was formed or if the input `data` was empty.
     pub fn update(&mut self, data: &[u8]) -> Option<Vec<ProofCarryingChunk>> {
         if data.is_empty() {
             return None;
@@ -271,6 +295,21 @@ impl BlobBuilder {
         if !chunks.is_empty() { Some(chunks) } else { None }
     }
 
+    /// Finalizes the `BlobBuilder`, processing any remaining buffered data
+    /// and constructing the `BlobHeader`.
+    ///
+    /// This method pads any incomplete `ChunkSet` in the buffer with zeros,
+    /// processes it, computes the final blob digest, and builds the top-level
+    /// Merkle tree over chunkset root commitments, yielding the `BlobHeader`
+    /// and at max 16 proof-carrying chunks, if there was an incomplete chunkset,
+    /// which needed to be built.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` which is:
+    /// - `Ok((Vec<ProofCarryingChunk>, BlobHeader))` containing either 0 or 16 `ProofCarryingChunk`s from last chunkset and the `BlobHeader` for the complete blob.
+    /// - `Err(DecdsError::EmptyDataForBlob)` if no data was ever absorbed by the builder.
+    /// - Other `DecdsError` types may be returned from underlying `MerkleTree::new` calls.
     pub fn finalize(mut self) -> Result<(Vec<ProofCarryingChunk>, BlobHeader), DecdsError> {
         if self.num_bytes_absorbed == 0 {
             return Err(DecdsError::EmptyDataForBlob);
