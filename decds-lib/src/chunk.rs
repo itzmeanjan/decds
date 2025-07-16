@@ -138,7 +138,7 @@ impl ProofCarryingChunk {
     /// # Arguments
     ///
     /// * `blob_proof` - A slice of `blake3::Hash` representing the proof to append.
-    pub(crate) fn append_proof_to_blob_root(&mut self, blob_proof: &[blake3::Hash]) {
+    pub fn append_proof_to_blob_root(&mut self, blob_proof: &[blake3::Hash]) {
         self.proof.extend_from_slice(blob_proof);
     }
 

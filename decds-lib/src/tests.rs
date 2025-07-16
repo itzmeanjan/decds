@@ -1,5 +1,7 @@
-use crate::{Blob, ProofCarryingChunk, RepairingBlob, consts, errors::DecdsError};
+use crate::{BlobBuilder, DecdsError, MerkleTree, RepairingBlob};
 use rand::{Rng, seq::SliceRandom};
+use rayon::prelude::*;
+use std::collections::HashMap;
 
 #[test]
 fn prop_test_blob_building_and_repairing_works() {
@@ -14,16 +16,38 @@ fn prop_test_blob_building_and_repairing_works() {
         let blob_byte_len = rng.random_range(MIN_BLOB_DATA_BYTE_LEN..=MAX_BLOB_DATA_BYTE_LEN);
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data.clone()).expect("Must be able to prepare blob");
+        let (mut chunks, blob_header) = {
+            let mut all_chunks = Vec::new();
 
-        let blob_header = blob.get_blob_header().to_owned();
-        let mut chunk_shares = (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
-            .flat_map(|share_id| unsafe { blob.get_share(share_id).unwrap_unchecked() })
-            .collect::<Vec<ProofCarryingChunk>>();
-        chunk_shares.shuffle(&mut rng);
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, blob_header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, blob_header)
+        };
+
+        let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+            .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
+            .collect();
+
+        let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+        let merkle_proofs = (0..blob_header.get_num_chunksets())
+            .into_par_iter()
+            .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+            .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+
+        chunks.par_iter_mut().for_each(|chunk| {
+            chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+        });
+
+        chunks.shuffle(&mut rng);
 
         let mut repairer = RepairingBlob::new(blob_header.clone());
-        let mut shares = chunk_shares.iter();
+        let mut shares = chunks.iter();
 
         loop {
             if let Some(share) = shares.next() {
