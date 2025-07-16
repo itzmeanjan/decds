@@ -8,73 +8,63 @@
 //!
 //! ## How to Use
 //!
-//! ### 1. Create a Blob
+//! To build a blob, first initialize the `BlobBuilder` struct, and incrementally keep putting data
+//! into it by calling `BlobBuilder::update` function arbirary many times. Once all data has been absorbed
+//! by the `BlobBuilder`` instance, it can be finalized, which returns the `BlobHeader`, holding all necessary
+//! metadata for chunk validation and reconstruction.
 //!
-//! To store data, first create a `Blob` from a `Vec<u8>`. The `Blob::new` function
-//! takes your raw data, divides it into chunksets, applies erasure coding, and builds
-//! Merkle trees for both chunkset-level and blob-level integrity.
-//!
-//! ```rust
-//! use decds_lib::Blob;
-//! use rand::Rng; // Assuming `rand` is available in your project for example data
-//!
-//! let mut rng = rand::thread_rng();
-//! let original_data: Vec<u8> = (0..1024 * 1024 * 50).map(|_| rng.random()).collect(); // 50MB of random data
-//! let blob = Blob::new(original_data).expect("Failed to create blob");
-//! println!("Blob created with size: {} bytes", blob.get_blob_header().get_blob_size());
-//! ```
-//!
-//! ### 2. Retrieve Erasure-Coded Shares (Proof-Carrying Chunks)
-//!
-//! Once a `Blob` is created, you can retrieve its erasure-coded shares. Each share is a `Vec<ProofCarryingChunk>`,
-//! where each `ProofCarryingChunk` is a verifiable piece of data.
-//! You need `DECDS_NUM_ERASURE_CODED_SHARES` total shares per chunkset, but only `ChunkSet::NUM_ORIGINAL_CHUNKS`
-//! (which is 10) are needed to reconstruct the original data of that chunkset.
-//!
-//! ```rust
-//! use decds_lib::{Blob, DECDS_NUM_ERASURE_CODED_SHARES};
-//! use rand::Rng;
-//!
-//! let mut rng = rand::thread_rng();
-//! let original_data: Vec<u8> = (0..1024).map(|_| rng.random()).collect();
-//! let blob = Blob::new(original_data).expect("Failed to create blob");
-//!
-//! let first_share = blob.get_share(0).expect("Failed to get share");
-//! println!("Retrieved {} chunks for share 0.", first_share.len());
-//!
-//! // You can iterate through all available shares:
-//! for share_id in 0..DECDS_NUM_ERASURE_CODED_SHARES {
-//!     let share = blob.get_share(share_id).expect("Failed to get share");
-//!     // Do something with the share, e.g., send it to a storage node
-//! }
-//! ```
-//!
-//! ### 3. Repair/Reconstruct a Blob
+//! Note, the `ProofCarryingChunk`s which are generated during blob building, does only carry proof of
+//! inclusion in respective `ChunkSet`s. Once the full blob is built, the proof carried by each chunk
+//! needs to be extended for validating blob inclusion, during reconstruction.
 //!
 //! To reconstruct the original blob data, you need to collect enough `ProofCarryingChunk`s.
 //! You initialize a `RepairingBlob` with the `BlobHeader` (which can be serialized/deserialized),
-//! and then add chunks to it. Once enough chunks for a specific chunkset are collected,
-//! you can retrieve its repaired data.
+//! and then add chunks to it. Once enough chunks for a specific chunkset are collected, you can retrieve
+//! its repaired data.
 //!
 //! ```rust
-//! use decds_lib::{Blob, BlobHeader, ProofCarryingChunk, RepairingBlob, DECDS_NUM_ERASURE_CODED_SHARES, DecdsError};
+//! use decds_lib::{BlobBuilder, BlobHeader, ProofCarryingChunk, RepairingBlob, DECDS_NUM_ERASURE_CODED_SHARES, DecdsError, MerkleTree};
 //! use rand::{Rng, seq::SliceRandom};
+//! use rayon::prelude::*;
+//! use std::collections::HashMap;
 //!
-//! let mut rng = rand::thread_rng();
+//! let mut rng = rand::rng();
 //! let original_data: Vec<u8> = (0..1024 * 1024 * 50).map(|_| rng.random()).collect(); // 50MB of random data
 //! let original_data_copy = original_data.clone();
 //!
-//! let blob = Blob::new(original_data).expect("Failed to create blob");
-//! let blob_header = blob.get_blob_header().clone();
 //!
-//! // Collect all chunks from the blob (simulate receiving them from storage)
-//! let mut all_chunks: Vec<ProofCarryingChunk> = (0..DECDS_NUM_ERASURE_CODED_SHARES)
-//!     .flat_map(|share_id| blob.get_share(share_id).unwrap())
+//! // Build the blob and collect all generated chunks
+//! let (mut chunks, blob_header) = {
+//!     let mut all_chunks = Vec::new();
+//!
+//!     let mut blob_builder = BlobBuilder::init();
+//!     if let Some(chunks) = blob_builder.update(&original_data) {
+//!         all_chunks.extend(chunks);
+//!     }
+//!
+//!     let (final_chunks, blob_header) = blob_builder.finalize().expect("Failed to finalize blob");
+//!     all_chunks.extend(final_chunks);
+//!
+//!     (all_chunks, blob_header)
+//! };
+//!
+//! let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+//!     .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
 //!     .collect();
+//!
+//! let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+//! let merkle_proofs = (0..blob_header.get_num_chunksets())
+//!     .into_par_iter()
+//!     .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+//!     .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+//!
+//! chunks.par_iter_mut().for_each(|chunk| {
+//!     chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+//! });
 //!
 //! // Simulate data loss by shuffling and taking only a subset (but enough for repair)
 //! // In a real scenario, you'd receive chunks from various sources
-//! all_chunks.shuffle(&mut rng);
+//! chunks.shuffle(&mut rng);
 //!
 //! let mut repairer = RepairingBlob::new(blob_header.clone());
 //! let num_chunksets = blob_header.get_num_chunksets();
@@ -84,11 +74,11 @@
 //! let mut repaired_chunksets_count = 0;
 //!
 //! while repaired_chunksets_count < num_chunksets {
-//!     if chunk_idx >= all_chunks.len() {
+//!     if chunk_idx >= chunks.len() {
 //!         println!("Not enough chunks to repair the entire blob!");
 //!         break;
 //!     }
-//!     let chunk = &all_chunks[chunk_idx];
+//!     let chunk = &chunks[chunk_idx];
 //!     let chunkset_id = chunk.get_chunkset_id();
 //!     // Try to add the chunk, handling various repair states
 //!     match repairer.add_chunk(chunk) {
@@ -133,8 +123,9 @@ mod merkle_tree;
 #[cfg(test)]
 mod tests;
 
-pub use blob::{Blob, BlobBuilder, BlobHeader, RepairingBlob};
+pub use blob::{BlobBuilder, BlobHeader, RepairingBlob};
 pub use chunk::ProofCarryingChunk;
 pub use chunkset::RepairingChunkSet;
 pub use consts::DECDS_NUM_ERASURE_CODED_SHARES;
 pub use errors::DecdsError;
+pub use merkle_tree::MerkleTree;
