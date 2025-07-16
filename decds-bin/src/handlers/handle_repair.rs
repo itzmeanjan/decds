@@ -15,7 +15,7 @@ pub fn handle_repair_command(chunk_dir_path: &PathBuf, opt_target_dir: &Option<P
     let blob_metadata = read_blob_metadata(&blob_metadata_path);
 
     println!("Original blob size: {}", format_bytes(blob_metadata.get_blob_size()));
-    println!("Original blob BLAKE3 Digest: {}", blob_metadata.get_blob_digest());
+    println!("Original blob BLAKE3 digest: {}", blob_metadata.get_blob_digest());
     println!("Original blob root commitment: {}", blob_metadata.get_root_commitment());
     println!("Original blob number of chunksets: {}", blob_metadata.get_num_chunksets());
     println!("Original blob number of chunks: {}", blob_metadata.get_num_chunks());
