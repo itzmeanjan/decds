@@ -215,6 +215,98 @@ impl BlobHeader {
     }
 }
 
+pub struct BlobBuilder {
+    hasher: blake3::Hasher,
+    num_bytes_absorbed: usize,
+    offset: usize,
+    buffer: Vec<u8>,
+    chunkset_root_commitments: Vec<blake3::Hash>,
+}
+
+impl BlobBuilder {
+    pub fn init() -> Self {
+        BlobBuilder {
+            hasher: blake3::Hasher::new(),
+            num_bytes_absorbed: 0,
+            offset: 0,
+            buffer: vec![0u8; ChunkSet::BYTE_LENGTH],
+            chunkset_root_commitments: vec![],
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) -> Option<Vec<ProofCarryingChunk>> {
+        if data.is_empty() {
+            return None;
+        }
+
+        self.hasher.update(data);
+
+        let mut idx = 0;
+        let mut chunks = Vec::new();
+
+        while idx < data.len() {
+            let remaining_data_byte_len = data.len() - idx;
+            let fillable_num_bytes_in_buffer = self.buffer.len() - self.offset;
+            let to_be_copied_num_bytes = remaining_data_byte_len.min(fillable_num_bytes_in_buffer);
+
+            self.buffer[self.offset..(self.offset + to_be_copied_num_bytes)].copy_from_slice(&data[idx..(idx + to_be_copied_num_bytes)]);
+
+            idx += to_be_copied_num_bytes;
+            self.offset += to_be_copied_num_bytes;
+            self.num_bytes_absorbed += to_be_copied_num_bytes;
+
+            if self.offset == self.buffer.len() {
+                let chunkset_id = self.num_bytes_absorbed / ChunkSet::BYTE_LENGTH;
+
+                let owned_buffer = std::mem::replace(&mut self.buffer, vec![0u8; ChunkSet::BYTE_LENGTH]);
+                let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, owned_buffer).unwrap_unchecked() };
+
+                chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
+                self.chunkset_root_commitments.push(chunkset.get_root_commitment());
+
+                self.offset = 0;
+            }
+        }
+
+        if !chunks.is_empty() { Some(chunks) } else { None }
+    }
+
+    pub fn finalize(mut self) -> Result<(Vec<ProofCarryingChunk>, BlobHeader), DecdsError> {
+        if self.num_bytes_absorbed == 0 {
+            return Err(DecdsError::EmptyDataForBlob);
+        }
+
+        let mut chunks = Vec::new();
+
+        if self.offset != 0 {
+            self.buffer[self.offset..].fill(0);
+
+            let chunkset_id = self.num_bytes_absorbed / ChunkSet::BYTE_LENGTH;
+            let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, self.buffer).unwrap_unchecked() };
+
+            chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
+            self.chunkset_root_commitments.push(chunkset.get_root_commitment());
+        }
+
+        let blob_digest = self.hasher.finalize();
+        let num_chunksets = self.num_bytes_absorbed.div_ceil(chunkset::ChunkSet::BYTE_LENGTH);
+
+        let merkle_tree = MerkleTree::new(self.chunkset_root_commitments.clone())?;
+        let blob_root_commitment = merkle_tree.get_root_commitment();
+
+        Ok((
+            chunks,
+            BlobHeader {
+                byte_length: self.num_bytes_absorbed,
+                num_chunksets,
+                digest: blob_digest,
+                root_commitment: blob_root_commitment,
+                chunkset_root_commitments: self.chunkset_root_commitments,
+            },
+        ))
+    }
+}
+
 /// Represents a complete, erasure-coded blob of data, consisting of a `BlobHeader` and a collection of `ChunkSet`s,
 /// each of which are holding 16 erasure-coded proof-of-inclusion carrying chunks.
 pub struct Blob {
