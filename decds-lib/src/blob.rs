@@ -2,12 +2,11 @@ use crate::{
     RepairingChunkSet,
     chunk::{self, ProofCarryingChunk},
     chunkset::{self, ChunkSet},
-    consts::{DECDS_BINCODE_CONFIG, DECDS_NUM_ERASURE_CODED_SHARES},
+    consts::DECDS_BINCODE_CONFIG,
     errors::DecdsError,
     merkle_tree::MerkleTree,
 };
 use blake3;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::RangeBounds, usize};
 
@@ -222,6 +221,7 @@ impl BlobHeader {
 pub struct BlobBuilder {
     hasher: blake3::Hasher,
     num_bytes_absorbed: usize,
+    num_chunksets: usize,
     offset: usize,
     buffer: Vec<u8>,
     chunkset_root_commitments: Vec<blake3::Hash>,
@@ -233,6 +233,7 @@ impl BlobBuilder {
         BlobBuilder {
             hasher: blake3::Hasher::new(),
             num_bytes_absorbed: 0,
+            num_chunksets: 0,
             offset: 0,
             buffer: vec![0u8; ChunkSet::BYTE_LENGTH],
             chunkset_root_commitments: vec![],
@@ -280,7 +281,7 @@ impl BlobBuilder {
             self.num_bytes_absorbed += to_be_copied_num_bytes;
 
             if self.offset == self.buffer.len() {
-                let chunkset_id = self.num_bytes_absorbed / ChunkSet::BYTE_LENGTH;
+                let chunkset_id = self.num_chunksets;
 
                 let owned_buffer = std::mem::replace(&mut self.buffer, vec![0u8; ChunkSet::BYTE_LENGTH]);
                 let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, owned_buffer).unwrap_unchecked() };
@@ -288,6 +289,7 @@ impl BlobBuilder {
                 chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
                 self.chunkset_root_commitments.push(chunkset.get_root_commitment());
 
+                self.num_chunksets += 1;
                 self.offset = 0;
             }
         }
@@ -320,15 +322,16 @@ impl BlobBuilder {
         if self.offset != 0 {
             self.buffer[self.offset..].fill(0);
 
-            let chunkset_id = self.num_bytes_absorbed / ChunkSet::BYTE_LENGTH;
+            let chunkset_id = self.num_chunksets;
             let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, self.buffer).unwrap_unchecked() };
 
             chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
             self.chunkset_root_commitments.push(chunkset.get_root_commitment());
+
+            self.num_chunksets += 1;
         }
 
         let blob_digest = self.hasher.finalize();
-        let num_chunksets = self.num_bytes_absorbed.div_ceil(chunkset::ChunkSet::BYTE_LENGTH);
 
         let merkle_tree = MerkleTree::new(self.chunkset_root_commitments.clone())?;
         let blob_root_commitment = merkle_tree.get_root_commitment();
@@ -337,7 +340,7 @@ impl BlobBuilder {
             chunks,
             BlobHeader {
                 byte_length: self.num_bytes_absorbed,
-                num_chunksets,
+                num_chunksets: self.num_chunksets,
                 digest: blob_digest,
                 root_commitment: blob_root_commitment,
                 chunkset_root_commitments: self.chunkset_root_commitments,
