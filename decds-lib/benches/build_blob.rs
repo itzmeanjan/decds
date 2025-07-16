@@ -1,4 +1,4 @@
-use decds_lib::Blob;
+use decds_lib::BlobBuilder;
 use rand::Rng;
 use std::{fmt::Debug, time::Duration};
 
@@ -51,5 +51,9 @@ fn build_blob(bencher: divan::Bencher, rlnc_config: &BlobConfig) {
             (0..rlnc_config.data_byte_len).map(|_| rng.random()).collect::<Vec<u8>>()
         })
         .input_counter(|data| divan::counter::BytesCount::new(data.len()))
-        .bench_values(|data| divan::black_box(Blob::new(divan::black_box(data))));
+        .bench_values(|data| {
+            let mut blob_builder = BlobBuilder::init();
+            divan::black_box(blob_builder.update(&data));
+            divan::black_box(blob_builder.finalize())
+        });
 }
