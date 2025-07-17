@@ -7,6 +7,7 @@ use crate::{
     merkle_tree::MerkleTree,
 };
 use blake3;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::RangeBounds, usize};
 
@@ -265,24 +266,26 @@ impl BlobBuilder {
         }
 
         self.hasher.update(data);
+        self.num_bytes_absorbed += data.len();
 
-        let mut idx = 0;
-        let mut chunks = Vec::new();
+        let total_num_bytes = self.offset + data.len();
+        let num_chunksets = total_num_bytes / ChunkSet::BYTE_LENGTH;
 
-        while idx < data.len() {
-            let remaining_data_byte_len = data.len() - idx;
-            let fillable_num_bytes_in_buffer = self.buffer.len() - self.offset;
-            let to_be_copied_num_bytes = remaining_data_byte_len.min(fillable_num_bytes_in_buffer);
+        if num_chunksets == 0 {
+            self.buffer[self.offset..total_num_bytes].copy_from_slice(data);
+            self.offset = total_num_bytes;
 
-            self.buffer[self.offset..(self.offset + to_be_copied_num_bytes)].copy_from_slice(&data[idx..(idx + to_be_copied_num_bytes)]);
+            return None;
+        } else {
+            let remaining_num_bytes = total_num_bytes - num_chunksets * ChunkSet::BYTE_LENGTH;
+            let dont_use_from_idx = data.len() - remaining_num_bytes;
 
-            idx += to_be_copied_num_bytes;
-            self.offset += to_be_copied_num_bytes;
-            self.num_bytes_absorbed += to_be_copied_num_bytes;
+            let mut chunks = Vec::with_capacity(num_chunksets * ChunkSet::NUM_ERASURE_CODED_CHUNKS);
 
-            if self.offset == self.buffer.len() {
+            if num_chunksets == 1 {
+                self.buffer[self.offset..].copy_from_slice(&data[..dont_use_from_idx]);
+
                 let chunkset_id = self.num_chunksets;
-
                 let owned_buffer = std::mem::replace(&mut self.buffer, vec![0u8; ChunkSet::BYTE_LENGTH]);
                 let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, owned_buffer).unwrap_unchecked() };
 
@@ -290,11 +293,43 @@ impl BlobBuilder {
                 self.chunkset_root_commitments.push(chunkset.get_root_commitment());
 
                 self.num_chunksets += 1;
-                self.offset = 0;
-            }
-        }
+            } else {
+                let mut working_mem = vec![0u8; num_chunksets * ChunkSet::BYTE_LENGTH];
+                working_mem[..self.offset].copy_from_slice(&self.buffer[..self.offset]);
+                working_mem[self.offset..].copy_from_slice(&data[..dont_use_from_idx]);
 
-        if !chunks.is_empty() { Some(chunks) } else { None }
+                let mut chunkset_root_commitments = Vec::with_capacity(num_chunksets);
+                let mut nested_chunks: Vec<Vec<ProofCarryingChunk>> = Vec::with_capacity(num_chunksets);
+
+                working_mem
+                    .par_chunks_exact(ChunkSet::BYTE_LENGTH)
+                    .enumerate()
+                    .map(|(data_chunk_idx, data_chunk)| {
+                        let chunkset_id = self.num_chunksets + data_chunk_idx;
+                        let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, data_chunk.to_vec()).unwrap_unchecked() };
+
+                        (
+                            chunkset.get_root_commitment(),
+                            (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
+                                .map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
+                                .collect(),
+                        )
+                    })
+                    .unzip_into_vecs(&mut chunkset_root_commitments, &mut nested_chunks);
+
+                self.chunkset_root_commitments.append(&mut chunkset_root_commitments);
+                chunks.extend(nested_chunks.into_iter().flatten());
+
+                self.num_chunksets += num_chunksets;
+            }
+
+            if remaining_num_bytes > 0 {
+                self.buffer[..remaining_num_bytes].copy_from_slice(&data[dont_use_from_idx..]);
+                self.offset = remaining_num_bytes;
+            }
+
+            Some(chunks)
+        }
     }
 
     /// Finalizes the `BlobBuilder`, processing any remaining buffered data
@@ -317,19 +352,21 @@ impl BlobBuilder {
             return Err(DecdsError::EmptyDataForBlob);
         }
 
-        let mut chunks = Vec::new();
-
-        if self.offset != 0 {
+        let chunks = if self.offset != 0 {
             self.buffer[self.offset..].fill(0);
 
             let chunkset_id = self.num_chunksets;
             let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, self.buffer).unwrap_unchecked() };
 
-            chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
             self.chunkset_root_commitments.push(chunkset.get_root_commitment());
-
             self.num_chunksets += 1;
-        }
+
+            (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
+                .map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let blob_digest = self.hasher.finalize();
 
