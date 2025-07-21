@@ -498,9 +498,9 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
 name = "rlnc"
-version = "0.4.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50c3be8084b2485662e800617d171bb673e27d7347f0b7fc7018b214a933dcbb"
+checksum = "59cd5b628bf48f8d34c9f49d6740748f6e8400107212dbc8739d1ccd7c127df9"
 dependencies = [
  "rand",
 ]

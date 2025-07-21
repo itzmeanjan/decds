@@ -21,7 +21,7 @@ categories = ["cryptography", "compression", "encoding"]
 
 [workspace.dependencies]
 blake3 = { version = "=1.8.2", features = ["serde"] }
-rlnc = { version = "=0.4.0" }
+rlnc = { version = "=0.6.1" }
 rand = "=0.9.1"
 serde = { version = "=1.0.219", features = ["derive"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
