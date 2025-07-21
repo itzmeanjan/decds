@@ -47,8 +47,8 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
     let mut buffered_fd = std::io::BufReader::with_capacity(TEN_MB, fd);
     let mut blob_builder = BlobBuilder::init();
 
-    let (blob_reader, blob_builder_in) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
-    let (blob_builder_out, chunk_writer) = std::sync::mpsc::sync_channel::<Vec<ProofCarryingChunk>>(1);
+    let (blob_reader, blob_builder_in) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (blob_builder_out, chunk_writer) = std::sync::mpsc::channel::<Vec<ProofCarryingChunk>>();
 
     // Thread for handling read from input data blob file.
     let reader_handle = std::thread::spawn(move || {
@@ -56,7 +56,7 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
 
         'OUTER: loop {
             let mut buffer_offset = 0;
-            let mut buffer = vec![0u8; TEN_MB];
+            let mut buffer = vec![0u8; num_cpus::get() * TEN_MB];
 
             'INNER: while buffer_offset < buffer.len() {
                 match buffered_fd.read(&mut buffer[buffer_offset..]) {
@@ -72,7 +72,9 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
             }
 
             if buffer_offset > 0 {
-                buffer.truncate(buffer_offset);
+                if buffer_offset != buffer.len() {
+                    buffer.truncate(buffer_offset);
+                }
 
                 if let Err(e) = blob_reader.send(buffer) {
                     return Err(DecdsCLIError::FailedToSendBlobDataToBlobBuilder(format!(
