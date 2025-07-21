@@ -1,4 +1,7 @@
-use crate::utils::{format_bytes, get_target_directory_path, read_proof_carrying_chunk};
+use crate::{
+    errors::DecdsCLIError,
+    utils::{format_bytes, get_target_directory_path, read_proof_carrying_chunk},
+};
 use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleTree, ProofCarryingChunk};
 use rayon::prelude::*;
 use std::{fs::File, io::Read, path::PathBuf, process::exit};
@@ -38,41 +41,90 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
 }
 
 fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) -> BlobHeader {
-    let mut buffered_fd = std::io::BufReader::new(fd);
-    let mut buffer = vec![0u8; num_cpus::get() * 10 * (1usize << 20)];
+    const ONE_MB: usize = 1usize << 20;
+    const TEN_MB: usize = 10 * ONE_MB;
+
+    let mut buffered_fd = std::io::BufReader::with_capacity(TEN_MB, fd);
     let mut blob_builder = BlobBuilder::init();
 
-    'OUTER: loop {
-        let mut buffer_offset = 0;
+    let (blob_reader, blob_builder_in) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let (blob_builder_out, chunk_writer) = std::sync::mpsc::sync_channel::<Vec<ProofCarryingChunk>>(1);
+
+    // Thread for handling read from input data blob file.
+    let reader_handle = std::thread::spawn(move || {
         let mut has_read_all = false;
 
-        'INNER: while buffer_offset < buffer.len() {
-            match buffered_fd.read(&mut buffer[buffer_offset..]) {
-                Ok(n) => {
-                    buffer_offset += n;
-                    if n == 0 {
-                        has_read_all = true;
-                        break 'INNER;
+        'OUTER: loop {
+            let mut buffer_offset = 0;
+            let mut buffer = vec![0u8; TEN_MB];
+
+            'INNER: while buffer_offset < buffer.len() {
+                match buffered_fd.read(&mut buffer[buffer_offset..]) {
+                    Ok(n) => {
+                        buffer_offset += n;
+                        if n == 0 {
+                            has_read_all = true;
+                            break 'INNER;
+                        }
                     }
+                    Err(_) => {}
                 }
-                Err(_) => {}
+            }
+
+            if buffer_offset > 0 {
+                buffer.truncate(buffer_offset);
+
+                if let Err(e) = blob_reader.send(buffer) {
+                    return Err(DecdsCLIError::FailedToSendBlobDataToBlobBuilder(format!(
+                        "failed to send {} bytes blob data to blob builder, over sync channel",
+                        e.0.len()
+                    )));
+                }
+            }
+
+            if has_read_all {
+                break 'OUTER;
             }
         }
 
-        if let Some(chunks) = blob_builder.update(&buffer[..buffer_offset]) {
-            chunks.iter().for_each(|chunk| {
-                write_proof_carrying_chunk(&target_dir_path, chunk);
+        Ok(())
+    });
+
+    // Thread for writing erasure-coded chunks to on-disk file.
+    let target_dir_path_cloned = target_dir_path.clone();
+    let writer_handle = std::thread::spawn(move || {
+        while let Ok(chunks) = chunk_writer.recv() {
+            chunks.into_par_iter().for_each(|chunk| {
+                write_proof_carrying_chunk(&target_dir_path_cloned, chunk);
             });
         }
+    });
 
-        if has_read_all {
-            break 'OUTER;
+    // Loop run by main thread for
+    //
+    // 1) Receiving input data blobs from one thread
+    // 2) Updating blob-builder state
+    // 3) Sending erasure-coded chunks to another thread
+    while let Ok(buffer) = blob_builder_in.recv() {
+        if let Some(chunks) = blob_builder.update(&buffer) {
+            if let Err(e) = blob_builder_out.send(chunks) {
+                eprintln!("Failed to send {} erasure-coded chunks to another thread, over sync channel", e.0.len());
+                exit(1);
+            }
         }
     }
 
+    drop(blob_builder_out);
+
+    if let Err(e) = reader_handle.join() {
+        eprintln!("Error: {:?}", e);
+        exit(1);
+    }
+    writer_handle.join().unwrap();
+
     match blob_builder.finalize() {
         Ok((chunks, blob_header)) => {
-            chunks.iter().for_each(|chunk| {
+            chunks.into_par_iter().for_each(|chunk| {
                 write_proof_carrying_chunk(&target_dir_path, chunk);
             });
 
@@ -86,30 +138,32 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
 }
 
 fn finalize_proof_carrying_chunks(metadata: &BlobHeader, target_dir_path: &PathBuf) {
+    if metadata.get_num_chunksets() == 1 {
+        return;
+    }
+
     let chunkset_root_commitments = (0..metadata.get_num_chunksets())
         .map(|chunkset_id| unsafe { metadata.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
         .collect();
     let merkle_tree = unsafe { MerkleTree::new(chunkset_root_commitments).unwrap_unchecked() };
 
-    (0..metadata.get_num_chunksets()).into_par_iter().for_each(|chunkset_id| {
+    (0..metadata.get_num_chunks()).into_par_iter().for_each(|chunk_id| {
+        let chunkset_id = chunk_id / DECDS_NUM_ERASURE_CODED_SHARES;
         let blob_level_proof = unsafe { merkle_tree.generate_proof(chunkset_id).unwrap_unchecked() };
-        if !blob_level_proof.is_empty() {
-            let mut blob_share_path = target_dir_path.clone();
-            blob_share_path.push(format!("chunkset.{}", chunkset_id));
 
-            (0..DECDS_NUM_ERASURE_CODED_SHARES).for_each(|share_id| {
-                blob_share_path.push(format!("share{:02}.data", share_id));
+        let mut blob_share_path = target_dir_path.clone();
+        blob_share_path.push(format!("chunkset.{}", chunkset_id));
+        blob_share_path.push(format!("share{:02}.data", chunk_id));
 
-                if let Ok(mut chunk) = read_proof_carrying_chunk(&blob_share_path) {
-                    chunk.append_proof_to_blob_root(&blob_level_proof);
+        if let Ok(mut chunk) = read_proof_carrying_chunk(&blob_share_path) {
+            chunk.append_proof_to_blob_root(&blob_level_proof);
 
-                    if let Ok(bytes) = chunk.to_bytes() {
-                        let _ = std::fs::write(&blob_share_path, bytes);
-                    }
+            if let Ok(bytes) = chunk.to_bytes() {
+                if let Err(e) = std::fs::write(&blob_share_path, bytes) {
+                    eprintln!("Error: {:?}", e);
+                    exit(1);
                 }
-
-                blob_share_path.pop();
-            });
+            }
         }
     });
 }
@@ -132,17 +186,15 @@ fn write_blob_metadata(target_dir: &PathBuf, metadata: &BlobHeader) {
     }
 }
 
-pub fn write_proof_carrying_chunk(target_dir: &PathBuf, chunk: &ProofCarryingChunk) {
+pub fn write_proof_carrying_chunk(target_dir: &PathBuf, chunk: ProofCarryingChunk) {
     match chunk.to_bytes() {
         Ok(bytes) => {
             let mut blob_share_path = target_dir.clone();
             blob_share_path.push(format!("chunkset.{}", chunk.get_chunkset_id()));
 
-            if !blob_share_path.is_dir() {
-                if let Err(e) = std::fs::create_dir(&blob_share_path) {
-                    eprintln!("Error: {}", e);
-                    exit(1);
-                }
+            if let Err(e) = std::fs::create_dir_all(&blob_share_path) {
+                eprintln!("Error: {}", e);
+                exit(1);
             }
 
             blob_share_path.push(format!("share{:02}.data", chunk.get_local_chunk_id()));
