@@ -44,7 +44,7 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
     const ONE_MB: usize = 1usize << 20;
     const TEN_MB: usize = 10 * ONE_MB;
 
-    let mut buffered_fd = std::io::BufReader::with_capacity(TEN_MB, fd);
+    let mut buffered_fd = std::io::BufReader::with_capacity(2 * TEN_MB, fd);
     let mut blob_builder = BlobBuilder::init();
 
     let (blob_reader, blob_builder_in) = std::sync::mpsc::channel::<Vec<u8>>();
@@ -56,7 +56,7 @@ fn read_blob_data_and_write_partial_chunks(fd: File, target_dir_path: &PathBuf) 
 
         'OUTER: loop {
             let mut buffer_offset = 0;
-            let mut buffer = vec![0u8; num_cpus::get() * TEN_MB];
+            let mut buffer = vec![0u8; TEN_MB];
 
             'INNER: while buffer_offset < buffer.len() {
                 match buffered_fd.read(&mut buffer[buffer_offset..]) {
