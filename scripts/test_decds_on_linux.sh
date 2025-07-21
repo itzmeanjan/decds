@@ -4,8 +4,8 @@
 set -e
 DECDS_OPT_FLAGS="-C opt-level=3 -C target-cpu=native"
 
-# Generate random 256MB data blob
-dd if=/dev/urandom of=random.data bs=1M count=256
+# Generate random 1GB data blob
+dd if=/dev/urandom of=random.data bs=1M count=1024
 
 # Break blob into chunksets and verify each chunk's validity
 time RUSTFLAGS=$DECDS_OPT_FLAGS cargo run --profile optimized -- break -b random.data -o broken
