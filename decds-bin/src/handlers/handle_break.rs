@@ -149,11 +149,13 @@ fn finalize_proof_carrying_chunks(metadata: &BlobHeader, target_dir_path: &PathB
 
     (0..metadata.get_num_chunks()).into_par_iter().for_each(|chunk_id| {
         let chunkset_id = chunk_id / DECDS_NUM_ERASURE_CODED_SHARES;
+        let share_id = chunk_id % DECDS_NUM_ERASURE_CODED_SHARES;
+
         let blob_level_proof = unsafe { merkle_tree.generate_proof(chunkset_id).unwrap_unchecked() };
 
         let mut blob_share_path = target_dir_path.clone();
         blob_share_path.push(format!("chunkset.{}", chunkset_id));
-        blob_share_path.push(format!("share{:02}.data", chunk_id));
+        blob_share_path.push(format!("share{:02}.data", share_id));
 
         if let Ok(mut chunk) = read_proof_carrying_chunk(&blob_share_path) {
             chunk.append_proof_to_blob_root(&blob_level_proof);
