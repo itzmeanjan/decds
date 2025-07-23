@@ -26,9 +26,13 @@ bench: ## Run all benchmarks
 coverage: ## Generates HTML code coverage report, using `cargo-tarpaulin`
 	cargo tarpaulin -t 600 --profile test-release --out Html
 
+.PHONY: build
+build: ## Builds `decds` executable, placing in `./target/optimized/decds`
+	RUSTFLAGS='-C target-cpu=native' cargo build --profile optimized
+
 .PHONY: install
-install: # Installs `decds` executable in `$HOME/.cargo/bin`
-	cargo install --profile optimized --path decds-bin --locked
+install: ## Installs `decds` executable in `$HOME/.cargo/bin`
+	RUSTFLAGS='-C target-cpu=native' cargo install --profile optimized --path decds-bin --locked
 
 .PHONY: clean
 clean: ## Removes cargo target directory
