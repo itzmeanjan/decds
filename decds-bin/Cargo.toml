@@ -20,3 +20,4 @@ blake3 = { workspace = true }
 decds-lib = { version = "=0.1.0", path = "../decds-lib" }
 num_cpus = { workspace = true }
 rayon = { workspace = true }
+tokio = { workspace = true }
