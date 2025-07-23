@@ -63,41 +63,41 @@ ORIGINAL_HASH=$($SHA256CMD random.data | awk '{print $1}')
 make build
 
 # Break blob into chunksets and verify each chunk's validity
-time -p ./target/optimized/decds break -b random.data -o broken
-time -p ./target/optimized/decds verify broken
+time ./target/optimized/decds break -b random.data -o broken
+time ./target/optimized/decds verify broken
 
 # Repair chunksets and check SHA256 digest of original data blob and repaired data blob
-time -p ./target/optimized/decds repair -c broken -o repairing-with-16
+time ./target/optimized/decds repair -c broken -o repairing-with-16
 verify_checksum "$ORIGINAL_HASH" "repairing-with-16/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 15 valid chunks for chunkset-15 - must work!
 dd if=/dev/urandom of=broken/chunkset.15/share00.data bs=1 seek=1 count=1 conv=notrunc
-time -p ./target/optimized/decds repair -c broken -o repairing-with-15
+time ./target/optimized/decds repair -c broken -o repairing-with-15
 verify_checksum "$ORIGINAL_HASH" "repairing-with-15/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 14 valid chunks for chunkset-15 - must work!
 dd if=/dev/urandom of=broken/chunkset.15/share02.data bs=1 seek=11 count=1 conv=notrunc
-time -p ./target/optimized/decds repair -c broken -o repairing-with-14
+time ./target/optimized/decds repair -c broken -o repairing-with-14
 verify_checksum "$ORIGINAL_HASH" "repairing-with-14/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 13 valid chunks for chunkset-15 - must work!
 dd if=/dev/urandom of=broken/chunkset.15/share04.data bs=1 seek=111 count=1 conv=notrunc
-time -p ./target/optimized/decds repair -c broken -o repairing-with-13
+time ./target/optimized/decds repair -c broken -o repairing-with-13
 verify_checksum "$ORIGINAL_HASH" "repairing-with-13/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 12 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share15.data bs=1 seek=1 count=1 conv=notrunc
-time -p ./target/optimized/decds repair -c broken -o repairing-with-12
+dd if=/dev/urandom of=broken/chunkset.15/share15.data bs=1 seek=77 count=1 conv=notrunc
+time ./target/optimized/decds repair -c broken -o repairing-with-12
 verify_checksum "$ORIGINAL_HASH" "repairing-with-12/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 11 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share12.data bs=1 seek=100 count=1 conv=notrunc
-time -p ./target/optimized/decds repair -c broken -o repairing-with-11
+dd if=/dev/urandom of=broken/chunkset.15/share12.data bs=1 seek=175 count=1 conv=notrunc
+time ./target/optimized/decds repair -c broken -o repairing-with-11
 verify_checksum "$ORIGINAL_HASH" "repairing-with-11/repaired.data"
 
 # Note:
@@ -114,7 +114,7 @@ dd if=/dev/urandom of=broken/chunkset.15/share09.data bs=1 seek=781 count=1 conv
 dd if=/dev/urandom of=broken/chunkset.15/share07.data bs=1 seek=223 count=1 conv=notrunc
 
 # Now trying to repair, with 9 valid chunks for chunkset-15, it should fail with return code 1, as chunkset-15 can't be recovered.
-time -p ./target/optimized/decds repair -c broken -o repairing-with-9 | tee console.out; test ${PIPESTATUS[0]} -eq 1
+time ./target/optimized/decds repair -c broken -o repairing-with-9 | tee console.out; test ${PIPESTATUS[0]} -eq 1
 
 # Clean up
 rm -rf random.data broken repairing-with* console.out /tmp/checksum.txt
