@@ -1,4 +1,5 @@
 use crate::utils::{format_bytes, get_target_directory_path};
+use console::Term;
 use console_static_text::{ConsoleSize, ConsoleStaticText};
 use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleTree, ProofCarryingChunk};
 use std::{
@@ -124,14 +125,11 @@ fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>
 fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>) -> BlobHeader {
     let mut blob_builder = BlobBuilder::init();
 
-    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
-        Ok((cols, rows)) => ConsoleSize {
+    let mut progress = ConsoleStaticText::new(|| {
+        let (rows, cols) = Term::stdout().size();
+        ConsoleSize {
             rows: Some(rows),
             cols: Some(cols),
-        },
-        Err(e) => {
-            eprintln!("Failed to query terminal size: {:?}", e);
-            exit(1);
         }
     });
     let now = Instant::now();
@@ -250,14 +248,11 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     let num_pending_spawned_tasks: usize = num_cpus::get() * 4;
     let mut join_handles = Vec::new();
 
-    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
-        Ok((cols, rows)) => ConsoleSize {
+    let mut progress = ConsoleStaticText::new(|| {
+        let (rows, cols) = Term::stdout().size();
+        ConsoleSize {
             rows: Some(rows),
             cols: Some(cols),
-        },
-        Err(e) => {
-            eprintln!("Failed to query terminal size: {:?}", e);
-            exit(1);
         }
     });
     let num_finalized_chunks = Arc::new(AtomicUsize::new(0));

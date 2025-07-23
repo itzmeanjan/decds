@@ -22,4 +22,4 @@ num_cpus = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true }
 console_static_text = { workspace = true }
-crossterm = { workspace = true }
+console = { workspace = true }

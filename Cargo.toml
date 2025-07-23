@@ -31,7 +31,7 @@ const-hex = "=1.14.1"
 num_cpus = "=1.17.0"
 tokio = { version = "=1.46.1", features = ["full"] }
 console_static_text = "=0.8.3"
-crossterm = "=0.29.0"
+console = "=0.16.0"
 
 [profile.optimized]
 inherits = "release"
