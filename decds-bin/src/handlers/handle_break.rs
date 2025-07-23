@@ -6,41 +6,51 @@ use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleT
 use std::{io::Read, path::PathBuf, process::exit};
 
 pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
-    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
-        let mut rng = rand::rng();
-        let target_dir_path = get_target_directory_path(blob_path, opt_target_dir, &mut rng);
+    match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => {
+            rt.block_on(async move {
+                let mut rng = rand::rng();
+                let target_dir_path = get_target_directory_path(blob_path, opt_target_dir, &mut rng);
 
-        if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(&target_dir_path) {
-            eprintln!("Error: {}", e);
+                if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(&target_dir_path) {
+                    eprintln!("Error: {}", e);
+                    exit(1);
+                }
+
+                println!("Reading {:?}", blob_path);
+                println!("Writing blob metadata and erasure-coded chunks in {:?}", target_dir_path);
+
+                let metadata = read_blob_and_partially_chunkify(blob_path.to_owned(), target_dir_path.to_owned()).await;
+
+                println!("Blob size {}", format_bytes(metadata.get_blob_size()));
+                println!("Blob BLAKE3 digest: {}", metadata.get_blob_digest());
+                println!("Blob root commitment: {}", metadata.get_root_commitment());
+                println!("Blob number of chunksets: {}", metadata.get_num_chunksets());
+                println!("Blob number of chunks: {}", metadata.get_num_chunks());
+
+                write_blob_metadata(&target_dir_path, &metadata).await;
+                finalize_proof_carrying_chunks(metadata, target_dir_path).await;
+            });
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
             exit(1);
         }
+    }
+}
 
-        println!("Reading {:?}", blob_path);
-        println!("Writing blob metadata and erasure-coded chunks in {:?}", target_dir_path);
+async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: PathBuf) -> BlobHeader {
+    let (blob_tx, blob_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(num_cpus::get() * 4);
+    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Vec<ProofCarryingChunk>>(num_cpus::get() * 4);
 
-        let (blob_tx, blob_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(num_cpus::get() * 4);
-        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Vec<ProofCarryingChunk>>(num_cpus::get() * 4);
+    let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_tx));
+    let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path, chunk_rx));
+    let metadata = tokio::task::block_in_place(move || build_blob(blob_rx, chunk_tx));
 
-        let blob_path_cloned = blob_path.clone();
-        let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path_cloned, blob_tx));
+    let _ = blob_reader_task.await;
+    let _ = chunk_writer_task.await;
 
-        let target_dir_path_cloned = target_dir_path.clone();
-        let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path_cloned, chunk_rx));
-
-        let metadata = tokio::task::block_in_place(move || build_blob(blob_rx, chunk_tx));
-
-        let _ = blob_reader_task.await;
-        let _ = chunk_writer_task.await;
-
-        println!("Blob size {}", format_bytes(metadata.get_blob_size()));
-        println!("Blob BLAKE3 digest: {}", metadata.get_blob_digest());
-        println!("Blob root commitment: {}", metadata.get_root_commitment());
-        println!("Blob number of chunksets: {}", metadata.get_num_chunksets());
-        println!("Blob number of chunks: {}", metadata.get_num_chunks());
-
-        write_blob_metadata(&target_dir_path, &metadata);
-        finalize_proof_carrying_chunks(metadata, target_dir_path).await;
-    });
+    metadata
 }
 
 fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
@@ -167,13 +177,13 @@ fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio
     }
 }
 
-fn write_blob_metadata(target_dir: &PathBuf, metadata: &BlobHeader) {
+async fn write_blob_metadata(target_dir: &PathBuf, metadata: &BlobHeader) {
     let mut blob_metadata_path = target_dir.clone();
     blob_metadata_path.push("metadata.commit");
 
     match metadata.to_bytes() {
         Ok(bytes) => {
-            if let Err(e) = std::fs::write(blob_metadata_path, bytes) {
+            if let Err(e) = tokio::fs::write(blob_metadata_path, bytes).await {
                 eprintln!("Error: {}", e);
                 exit(1);
             }
