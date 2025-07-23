@@ -2,8 +2,9 @@ use crate::{
     errors::DecdsCLIError,
     utils::{format_bytes, get_target_directory_path},
 };
+use console_static_text::{ConsoleSize, ConsoleStaticText};
 use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleTree, ProofCarryingChunk};
-use std::{io::Read, path::PathBuf, process::exit};
+use std::{io::Read, path::PathBuf, process::exit, time::Instant};
 
 pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
     match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -29,7 +30,9 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
                 println!("Blob number of chunks: {}", metadata.get_num_chunks());
 
                 write_blob_metadata(&target_dir_path, &metadata).await;
-                finalize_proof_carrying_chunks(metadata, target_dir_path).await;
+                finalize_proof_carrying_chunks(metadata, target_dir_path.to_owned()).await;
+
+                println!("Erasure-coded chunks placed in {:?}", target_dir_path);
             });
         }
         Err(e) => {
@@ -152,12 +155,31 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
 
 fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>) -> BlobHeader {
     let mut blob_builder = BlobBuilder::init();
+
+    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
+        Ok((cols, rows)) => ConsoleSize {
+            rows: Some(rows),
+            cols: Some(cols),
+        },
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            exit(1);
+        }
+    });
+    let now = Instant::now();
+
     while let Some(buffer) = blob_rx.blocking_recv() {
         if let Some(chunks) = blob_builder.update(&buffer) {
             if let Err(e) = chunk_tx.blocking_send(chunks) {
                 eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over sync channel", e.0.len());
                 exit(1);
             }
+
+            progress.eprint(&format!(
+                "Processed {} in {:?}...",
+                format_bytes(blob_builder.num_bytes_absorbed_so_far()),
+                now.elapsed()
+            ));
         }
     }
 
@@ -168,6 +190,7 @@ fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio
                 exit(1);
             }
 
+            progress.eprint_clear();
             blob_header
         }
         Err(e) => {

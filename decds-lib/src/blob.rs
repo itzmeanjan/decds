@@ -241,6 +241,10 @@ impl BlobBuilder {
         }
     }
 
+    pub fn num_bytes_absorbed_so_far(&self) -> usize {
+        self.num_bytes_absorbed
+    }
+
     /// Updates the `BlobBuilder` with new data.
     ///
     /// This method absorbs the provided `data` into the internal buffer. If enough
