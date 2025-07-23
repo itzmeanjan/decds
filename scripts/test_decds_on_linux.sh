@@ -2,7 +2,6 @@
 
 # Trap failure of any following commands
 set -e
-DECDS_OPT_FLAGS="-C opt-level=3 -C target-cpu=native"
 
 # Generate random 1GB data blob
 dd if=/dev/urandom of=random.data bs=1M count=1024
