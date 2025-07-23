@@ -4,7 +4,16 @@ use crate::{
 };
 use console_static_text::{ConsoleSize, ConsoleStaticText};
 use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleTree, ProofCarryingChunk};
-use std::{io::Read, path::PathBuf, process::exit, time::Instant};
+use std::{
+    io::Read,
+    path::PathBuf,
+    process::exit,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
 
 pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
     match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -231,12 +240,26 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     let num_pending_spawned_tasks: usize = num_cpus::get() * 4;
     let mut join_handles = Vec::new();
 
+    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
+        Ok((cols, rows)) => ConsoleSize {
+            rows: Some(rows),
+            cols: Some(cols),
+        },
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            exit(1);
+        }
+    });
+    let num_finalized_chunks = Arc::new(AtomicUsize::new(0));
+    let now = Instant::now();
+
     for chunkset_id in 0..metadata.get_num_chunksets() {
         let blob_level_proof = unsafe { merkle_tree.generate_proof(chunkset_id).unwrap_unchecked() };
 
         join_handles.extend((0..DECDS_NUM_ERASURE_CODED_SHARES).map(|share_id| {
             let mut blob_share_path = target_dir_path.clone();
             let blob_level_proof_cloned = blob_level_proof.clone();
+            let num_finalized_chunks_cloned = num_finalized_chunks.clone();
 
             tokio::task::spawn(async move {
                 blob_share_path.push(format!("chunkset.{}", chunkset_id));
@@ -269,6 +292,8 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
                                 eprintln!("Error: {:?}", e);
                                 exit(1);
                             }
+
+                            num_finalized_chunks_cloned.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     Err(e) => {
@@ -287,6 +312,13 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
                 }
             }
         }
+
+        progress.eprint(&format!(
+            "Finalized chunks {}/{} in {:?}...",
+            num_finalized_chunks.load(Ordering::Relaxed),
+            metadata.get_num_chunks(),
+            now.elapsed()
+        ));
     }
 
     for join_handle in join_handles.drain(..) {
@@ -295,4 +327,6 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
             exit(1);
         }
     }
+
+    progress.eprint_clear();
 }
