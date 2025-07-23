@@ -35,6 +35,6 @@ jobs:
       - name: Build and Test on ${{ matrix.os }}
         run: make test
 
-      - name: Test decds CLI on Linux/Mac
+      - name: Test decds CLI on Unix-like environment
         if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: bash scripts/test_decds_on_linux.sh
+        run: bash scripts/test_decds_on_unix.sh
