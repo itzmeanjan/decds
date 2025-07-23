@@ -1,7 +1,4 @@
-use crate::{
-    errors::DecdsCLIError,
-    utils::{format_bytes, get_target_directory_path},
-};
+use crate::utils::{format_bytes, get_target_directory_path};
 use console_static_text::{ConsoleSize, ConsoleStaticText};
 use decds_lib::{BlobBuilder, BlobHeader, DECDS_NUM_ERASURE_CODED_SHARES, MerkleTree, ProofCarryingChunk};
 use std::{
@@ -23,7 +20,7 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
                 let target_dir_path = get_target_directory_path(blob_path, opt_target_dir, &mut rng);
 
                 if let Err(e) = std::fs::DirBuilder::new().recursive(true).create(&target_dir_path) {
-                    eprintln!("Error: {}", e);
+                    eprintln!("Failed to create target directory {:?} to put chunks: {:?}", target_dir_path, e);
                     exit(1);
                 }
 
@@ -45,7 +42,7 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
             });
         }
         Err(e) => {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Failed to create a `tokio` async runtime: {:?}", e);
             exit(1);
         }
     }
@@ -56,13 +53,26 @@ async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: P
     let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Vec<ProofCarryingChunk>>(num_cpus::get() * 4);
 
     let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_tx));
+    let blob_builder_task = tokio::task::spawn_blocking(move || build_blob(blob_rx, chunk_tx));
     let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path, chunk_rx));
-    let metadata = tokio::task::block_in_place(move || build_blob(blob_rx, chunk_tx));
 
-    let _ = blob_reader_task.await;
-    let _ = chunk_writer_task.await;
+    if let Err(e) = blob_reader_task.await {
+        eprintln!("Blob reader task failed to finish: {:?}", e);
+        exit(1);
+    }
 
-    metadata
+    if let Err(e) = chunk_writer_task.await {
+        eprintln!("Partial chunk writer task failed to finish: {:?}", e);
+        exit(1);
+    }
+
+    match blob_builder_task.await {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            eprintln!("Blob builder task failed to finish: {:?}", e);
+            exit(1);
+        }
+    }
 }
 
 fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
@@ -94,7 +104,7 @@ fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>
 
                 if buffer_offset > 0 {
                     if let Err(e) = blob_tx.blocking_send(buffer[..buffer_offset].to_vec()) {
-                        eprintln!("Failed to send {} bytes blob data to blob builder task, over sync channel", e.0.len());
+                        eprintln!("Failed to send {} bytes blob data to blob builder task, over channel", e.0.len());
                         exit(1);
                     }
                 }
@@ -105,7 +115,54 @@ fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>
             }
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Failed to open input blob file {:?}: {:?}", blob_path, e);
+            exit(1);
+        }
+    }
+}
+
+fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>) -> BlobHeader {
+    let mut blob_builder = BlobBuilder::init();
+
+    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
+        Ok((cols, rows)) => ConsoleSize {
+            rows: Some(rows),
+            cols: Some(cols),
+        },
+        Err(e) => {
+            eprintln!("Failed to query terminal size: {:?}", e);
+            exit(1);
+        }
+    });
+    let now = Instant::now();
+
+    while let Some(buffer) = blob_rx.blocking_recv() {
+        if let Some(chunks) = blob_builder.update(&buffer) {
+            if let Err(e) = chunk_tx.blocking_send(chunks) {
+                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
+                exit(1);
+            }
+
+            progress.eprint(&format!(
+                "Processed {} in {:?}...",
+                format_bytes(blob_builder.num_bytes_absorbed_so_far()),
+                now.elapsed()
+            ));
+        }
+    }
+
+    match blob_builder.finalize() {
+        Ok((chunks, blob_header)) => {
+            if let Err(e) = chunk_tx.blocking_send(chunks) {
+                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
+                exit(1);
+            }
+
+            progress.eprint_clear();
+            blob_header
+        }
+        Err(e) => {
+            eprintln!("Failed to finalize the blob builder: {:?}", e);
             exit(1);
         }
     }
@@ -125,19 +182,19 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
                         blob_share_path.push(format!("chunkset.{}", chunk.get_chunkset_id()));
 
                         if let Err(e) = tokio::fs::create_dir_all(&blob_share_path).await {
-                            eprintln!("Error: {}", e);
+                            eprintln!("Failed to create directory {:?} for putting chunks: {:?}", blob_share_path, e);
                             exit(1);
                         }
 
                         blob_share_path.push(format!("share{:02}.data", chunk.get_local_chunk_id()));
 
                         if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
-                            eprintln!("Error: {}", e);
+                            eprintln!("Failed to write partial chunk to file {:?}: {:?}", blob_share_path, e);
                             exit(1);
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error: {}", e);
+                        eprintln!("Failed to serialize partial chunk with chunk-id {}: {:?}", chunk.get_global_chunk_id(), e);
                         exit(1);
                     }
                 };
@@ -147,7 +204,7 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
         if join_handles.len() > num_pending_spawned_tasks {
             for join_handle in join_handles.drain(..) {
                 if let Err(e) = join_handle.await {
-                    eprintln!("Error: {:?}", e);
+                    eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
                     exit(1);
                 }
             }
@@ -156,54 +213,7 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
 
     for join_handle in join_handles.drain(..) {
         if let Err(e) = join_handle.await {
-            eprintln!("Error: {:?}", e);
-            exit(1);
-        }
-    }
-}
-
-fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>) -> BlobHeader {
-    let mut blob_builder = BlobBuilder::init();
-
-    let mut progress = ConsoleStaticText::new(|| match crossterm::terminal::size() {
-        Ok((cols, rows)) => ConsoleSize {
-            rows: Some(rows),
-            cols: Some(cols),
-        },
-        Err(e) => {
-            eprintln!("Error: {:?}", e);
-            exit(1);
-        }
-    });
-    let now = Instant::now();
-
-    while let Some(buffer) = blob_rx.blocking_recv() {
-        if let Some(chunks) = blob_builder.update(&buffer) {
-            if let Err(e) = chunk_tx.blocking_send(chunks) {
-                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over sync channel", e.0.len());
-                exit(1);
-            }
-
-            progress.eprint(&format!(
-                "Processed {} in {:?}...",
-                format_bytes(blob_builder.num_bytes_absorbed_so_far()),
-                now.elapsed()
-            ));
-        }
-    }
-
-    match blob_builder.finalize() {
-        Ok((chunks, blob_header)) => {
-            if let Err(e) = chunk_tx.blocking_send(chunks) {
-                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over sync channel", e.0.len());
-                exit(1);
-            }
-
-            progress.eprint_clear();
-            blob_header
-        }
-        Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
             exit(1);
         }
     }
@@ -215,13 +225,13 @@ async fn write_blob_metadata(target_dir: &PathBuf, metadata: &BlobHeader) {
 
     match metadata.to_bytes() {
         Ok(bytes) => {
-            if let Err(e) = tokio::fs::write(blob_metadata_path, bytes).await {
-                eprintln!("Error: {}", e);
+            if let Err(e) = tokio::fs::write(&blob_metadata_path, bytes).await {
+                eprintln!("Failed to write blob metadata to file {:?}: {:?}", blob_metadata_path, e);
                 exit(1);
             }
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Failed to serialize blob metadata: {:?}", e);
             exit(1);
         }
     }
@@ -246,7 +256,7 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
             cols: Some(cols),
         },
         Err(e) => {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Failed to query terminal size: {:?}", e);
             exit(1);
         }
     });
@@ -256,50 +266,57 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     for chunkset_id in 0..metadata.get_num_chunksets() {
         join_handles.extend((0..DECDS_NUM_ERASURE_CODED_SHARES).map(|share_id| {
             let mut blob_share_path = target_dir_path.clone();
-            let num_finalized_chunks_cloned = num_finalized_chunks.clone();
             let merkle_tree_cloned = merkle_tree.clone();
+            let num_finalized_chunks_clone = num_finalized_chunks.clone();
 
             tokio::task::spawn(async move {
-                let blob_level_proof = unsafe { merkle_tree_cloned.generate_proof(chunkset_id).unwrap_unchecked() };
-
                 blob_share_path.push(format!("chunkset.{}", chunkset_id));
                 blob_share_path.push(format!("share{:02}.data", share_id));
 
-                let chunk = match tokio::fs::read(&blob_share_path).await {
+                let mut chunk = match tokio::fs::read(&blob_share_path).await {
                     Ok(bytes) => match ProofCarryingChunk::from_bytes(&bytes) {
                         Ok((chunk, n)) => {
                             if n != bytes.len() {
-                                Err(DecdsCLIError::FailedToReadProofCarryingChunk(format!(
-                                    "Erasure-coded chunk file {:?} is {} bytes longer than it should be",
-                                    blob_share_path,
-                                    bytes.len() - n
-                                )))
-                            } else {
-                                Ok(chunk)
-                            }
-                        }
-                        Err(e) => Err(DecdsCLIError::FailedToReadProofCarryingChunk(e.to_string())),
-                    },
-                    Err(e) => Err(DecdsCLIError::FailedToReadProofCarryingChunk(e.to_string())),
-                };
-
-                match chunk {
-                    Ok(mut chunk) => {
-                        chunk.append_proof_to_blob_root(&blob_level_proof);
-
-                        if let Ok(bytes) = chunk.to_bytes() {
-                            if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
-                                eprintln!("Error: {:?}", e);
+                                eprintln!("Chunk file {:?} is {} bytes longer than it should be", blob_share_path, bytes.len() - n);
                                 exit(1);
+                            } else {
+                                chunk
                             }
-
-                            num_finalized_chunks_cloned.fetch_add(1, Ordering::Relaxed);
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Failed to deserialize partial chunk from file {:?}: {:?}", blob_share_path, e);
+                            exit(1);
+                        }
+                    },
                     Err(e) => {
-                        eprintln!("Error: {:?}", e);
+                        eprintln!("Failed to read partial chunk file {:?}: {:?}", blob_share_path, e);
                         exit(1);
                     }
+                };
+
+                match tokio::task::spawn_blocking(move || unsafe { merkle_tree_cloned.generate_proof(chunkset_id).unwrap_unchecked() }).await {
+                    Ok(blob_level_proof) => {
+                        chunk.append_proof_to_blob_root(&blob_level_proof);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to generate blob-level Merkle proof-of-inclusion for chunk-id {}: {:?}",
+                            chunk.get_global_chunk_id(),
+                            e
+                        );
+                        exit(1);
+                    }
+                }
+
+                if let Ok(bytes) = chunk.to_bytes() {
+                    if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
+                        eprintln!("Failed to write complete chunk to file {:?}: {:?}", blob_share_path, e);
+                        exit(1);
+                    }
+
+                    // Update atomic counter, which keeps track of how many sub-tasks completed its job
+                    // of updating a partial chunk with blob-level proof-of-inclusion.
+                    num_finalized_chunks_clone.fetch_add(1, Ordering::Relaxed);
                 }
             })
         }));
@@ -307,7 +324,7 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
         if join_handles.len() > num_pending_spawned_tasks {
             for join_handle in join_handles.drain(..) {
                 if let Err(e) = join_handle.await {
-                    eprintln!("Error: {:?}", e);
+                    eprintln!("Chunk finalizer sub-task failed to finish: {:?}", e);
                     exit(1);
                 }
             }
@@ -323,7 +340,7 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
 
     for join_handle in join_handles.drain(..) {
         if let Err(e) = join_handle.await {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Chunk finalizer sub-task failed to finish: {:?}", e);
             exit(1);
         }
 
