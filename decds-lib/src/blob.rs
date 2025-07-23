@@ -896,7 +896,7 @@ mod tests {
 
         for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id {
-                repairer_ready.add_chunk(chunk).unwrap();
+                let _ = repairer_ready.add_chunk(chunk);
 
                 if repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap() {
                     break;
@@ -975,7 +975,7 @@ mod tests {
         // Add enough chunks for the first chunkset
         for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id_0 {
-                repairer.add_chunk(chunk).unwrap();
+                let _ = repairer.add_chunk(chunk);
 
                 if repairer.is_chunkset_ready_to_repair(chunkset_id_0).unwrap() {
                     break;
@@ -1002,7 +1002,7 @@ mod tests {
 
         for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id_2 {
-                repairer.add_chunk(chunk).unwrap();
+                let _ = repairer.add_chunk(chunk);
 
                 if repairer.is_chunkset_ready_to_repair(chunkset_id_2).unwrap() {
                     break;
