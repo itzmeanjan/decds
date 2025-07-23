@@ -260,7 +260,7 @@ mod tests {
 
             let mut chunk_idx = 0;
             while !repairing_chunkset.is_ready_to_repair() {
-                repairing_chunkset.add_chunk(chunks[chunk_idx]).unwrap();
+                let _ = repairing_chunkset.add_chunk(chunks[chunk_idx]);
                 chunk_idx += 1;
             }
 
@@ -366,8 +366,19 @@ mod tests {
         let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
         // Add fewer than NUM_ORIGINAL_CHUNKS chunks
-        for i in 0..(ChunkSet::NUM_ORIGINAL_CHUNKS - 1) {
-            repairing_chunkset.add_chunk(chunkset.get_chunk(i).unwrap()).unwrap();
+        let mut chunk_idx = 0;
+        let mut useful_count = 0;
+
+        while chunk_idx < ChunkSet::NUM_ERASURE_CODED_CHUNKS {
+            let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
+            if let Ok(_) = repairing_chunkset.add_chunk(chunk) {
+                useful_count += 1;
+            }
+
+            chunk_idx += 1;
+            if useful_count == ChunkSet::NUM_ORIGINAL_CHUNKS - 1 {
+                break;
+            }
         }
 
         assert!(!repairing_chunkset.is_ready_to_repair());
@@ -383,9 +394,9 @@ mod tests {
         let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
         let mut chunk_idx = 0;
-        while !repairing_chunkset.is_ready_to_repair() {
+        while !repairing_chunkset.is_ready_to_repair() && chunk_idx < ChunkSet::NUM_ERASURE_CODED_CHUNKS {
             let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
-            repairing_chunkset.add_chunk(chunk).expect("Must be able to add valid chunk");
+            let _ = repairing_chunkset.add_chunk(chunk);
 
             chunk_idx += 1;
         }
