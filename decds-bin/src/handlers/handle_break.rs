@@ -235,7 +235,7 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     let chunkset_root_commitments = (0..metadata.get_num_chunksets())
         .map(|chunkset_id| unsafe { metadata.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
         .collect();
-    let merkle_tree = unsafe { MerkleTree::new(chunkset_root_commitments).unwrap_unchecked() };
+    let merkle_tree = Arc::new(unsafe { MerkleTree::new(chunkset_root_commitments).unwrap_unchecked() });
 
     let num_pending_spawned_tasks: usize = num_cpus::get() * 4;
     let mut join_handles = Vec::new();
@@ -254,14 +254,14 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     let now = Instant::now();
 
     for chunkset_id in 0..metadata.get_num_chunksets() {
-        let blob_level_proof = unsafe { merkle_tree.generate_proof(chunkset_id).unwrap_unchecked() };
-
         join_handles.extend((0..DECDS_NUM_ERASURE_CODED_SHARES).map(|share_id| {
             let mut blob_share_path = target_dir_path.clone();
-            let blob_level_proof_cloned = blob_level_proof.clone();
             let num_finalized_chunks_cloned = num_finalized_chunks.clone();
+            let merkle_tree_cloned = merkle_tree.clone();
 
             tokio::task::spawn(async move {
+                let blob_level_proof = unsafe { merkle_tree_cloned.generate_proof(chunkset_id).unwrap_unchecked() };
+
                 blob_share_path.push(format!("chunkset.{}", chunkset_id));
                 blob_share_path.push(format!("share{:02}.data", share_id));
 
@@ -285,7 +285,7 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
 
                 match chunk {
                     Ok(mut chunk) => {
-                        chunk.append_proof_to_blob_root(&blob_level_proof_cloned);
+                        chunk.append_proof_to_blob_root(&blob_level_proof);
 
                         if let Ok(bytes) = chunk.to_bytes() {
                             if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
@@ -326,6 +326,13 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
             eprintln!("Error: {:?}", e);
             exit(1);
         }
+
+        progress.eprint(&format!(
+            "Finalized chunks {}/{} in {:?}...",
+            num_finalized_chunks.load(Ordering::Relaxed),
+            metadata.get_num_chunks(),
+            now.elapsed()
+        ));
     }
 
     progress.eprint_clear();
