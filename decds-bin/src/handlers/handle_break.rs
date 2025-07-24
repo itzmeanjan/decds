@@ -12,6 +12,7 @@ use std::{
     },
     time::Instant,
 };
+use tokio::task::JoinSet;
 
 pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf>) {
     match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -167,14 +168,14 @@ fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio
 }
 
 async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::sync::mpsc::Receiver<Vec<ProofCarryingChunk>>) {
-    let num_pending_spawned_tasks: usize = num_cpus::get() * 4;
-    let mut join_handles = Vec::new();
+    let max_num_pending_spawned_tasks: usize = num_cpus::get() * 4;
+    let mut join_handles = JoinSet::new();
 
     while let Some(chunks) = chunk_rx.recv().await {
-        join_handles.extend(chunks.into_iter().map(|chunk| {
+        for chunk in chunks {
             let mut blob_share_path = target_dir_path.clone();
 
-            tokio::task::spawn(async move {
+            join_handles.spawn(async move {
                 match chunk.to_bytes() {
                     Ok(bytes) => {
                         blob_share_path.push(format!("chunkset.{}", chunk.get_chunkset_id()));
@@ -195,22 +196,27 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
                         eprintln!("Failed to serialize partial chunk with chunk-id {}: {:?}", chunk.get_global_chunk_id(), e);
                         exit(1);
                     }
-                };
-            })
-        }));
+                }
+            });
+        }
 
-        if join_handles.len() > num_pending_spawned_tasks {
-            for join_handle in join_handles.drain(..) {
-                if let Err(e) = join_handle.await {
+        if join_handles.len() > max_num_pending_spawned_tasks {
+            let mut idx = 0;
+            let num_tasks_to_be_joined = join_handles.len() - max_num_pending_spawned_tasks;
+
+            while idx < num_tasks_to_be_joined {
+                if let Err(e) = unsafe { join_handles.join_next().await.unwrap_unchecked() } {
                     eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
                     exit(1);
                 }
+
+                idx += 1;
             }
         }
     }
 
-    for join_handle in join_handles.drain(..) {
-        if let Err(e) = join_handle.await {
+    while let Some(task_result) = join_handles.join_next().await {
+        if let Err(e) = task_result {
             eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
             exit(1);
         }
@@ -245,8 +251,8 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
         .collect();
     let merkle_tree = Arc::new(unsafe { MerkleTree::new(chunkset_root_commitments).unwrap_unchecked() });
 
-    let num_pending_spawned_tasks: usize = num_cpus::get() * 4;
-    let mut join_handles = Vec::new();
+    let max_num_pending_spawned_tasks: usize = num_cpus::get() * 4;
+    let mut join_handles = JoinSet::new();
 
     let mut progress = ConsoleStaticText::new(|| {
         let (rows, cols) = Term::stdout().size();
@@ -259,12 +265,12 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
     let now = Instant::now();
 
     for chunkset_id in 0..metadata.get_num_chunksets() {
-        join_handles.extend((0..DECDS_NUM_ERASURE_CODED_SHARES).map(|share_id| {
+        for share_id in 0..DECDS_NUM_ERASURE_CODED_SHARES {
             let mut blob_share_path = target_dir_path.clone();
             let merkle_tree_cloned = merkle_tree.clone();
             let num_finalized_chunks_clone = num_finalized_chunks.clone();
 
-            tokio::task::spawn(async move {
+            join_handles.spawn(async move {
                 blob_share_path.push(format!("chunkset.{}", chunkset_id));
                 blob_share_path.push(format!("share{:02}.data", share_id));
 
@@ -313,15 +319,20 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
                     // of updating a partial chunk with blob-level proof-of-inclusion.
                     num_finalized_chunks_clone.fetch_add(1, Ordering::Relaxed);
                 }
-            })
-        }));
+            });
+        }
 
-        if join_handles.len() > num_pending_spawned_tasks {
-            for join_handle in join_handles.drain(..) {
-                if let Err(e) = join_handle.await {
-                    eprintln!("Chunk finalizer sub-task failed to finish: {:?}", e);
+        if join_handles.len() > max_num_pending_spawned_tasks {
+            let mut idx = 0;
+            let num_tasks_to_be_joined = join_handles.len() - max_num_pending_spawned_tasks;
+
+            while idx < num_tasks_to_be_joined {
+                if let Err(e) = unsafe { join_handles.join_next().await.unwrap_unchecked() } {
+                    eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
                     exit(1);
                 }
+
+                idx += 1;
             }
         }
 
@@ -333,9 +344,9 @@ async fn finalize_proof_carrying_chunks(metadata: BlobHeader, target_dir_path: P
         ));
     }
 
-    for join_handle in join_handles.drain(..) {
-        if let Err(e) = join_handle.await {
-            eprintln!("Chunk finalizer sub-task failed to finish: {:?}", e);
+    while let Some(task_result) = join_handles.join_next().await {
+        if let Err(e) = task_result {
+            eprintln!("Partial chunk writer sub-task failed to finish: {:?}", e);
             exit(1);
         }
 
