@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::exit,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Instant,
@@ -51,11 +51,14 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
 }
 
 async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: PathBuf) -> BlobHeader {
-    let (blob_tx, blob_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(num_cpus::get() * 4);
     let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Vec<ProofCarryingChunk>>(num_cpus::get() * 4);
 
-    let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_tx));
-    let blob_builder_task = tokio::task::spawn_blocking(move || build_blob(blob_rx, chunk_tx));
+    let blob_bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let (blob_bytes_tx, blob_bytes_rx) = (blob_bytes.clone(), blob_bytes.clone());
+    let (blob_eof_tx, blob_eof_rx) = tokio::sync::oneshot::channel::<bool>();
+
+    let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_bytes_tx, blob_eof_tx));
+    let blob_builder_task = tokio::task::spawn_blocking(move || build_blob(blob_bytes_rx, blob_eof_rx, chunk_tx));
     let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path, chunk_rx));
 
     if let Err(e) = blob_reader_task.await {
@@ -77,41 +80,49 @@ async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: P
     }
 }
 
-fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
+fn read_blob_data(blob_path: PathBuf, blob_bytes_tx: Arc<Mutex<Vec<u8>>>, blob_eof_tx: tokio::sync::oneshot::Sender<bool>) {
     match std::fs::OpenOptions::new().read(true).open(&blob_path) {
         Ok(fd) => {
             const ONE_MB: usize = 1usize << 20;
             const TEN_MB: usize = 10 * ONE_MB;
             const SIXTEEN_MB: usize = 16 * ONE_MB;
 
-            let mut has_read_all = false;
+            let mut has_reached_eof = false;
             let mut buffered_fd = std::io::BufReader::with_capacity(SIXTEEN_MB, fd);
-            let mut buffer = vec![0u8; num_cpus::get() * TEN_MB];
+            let mut buffer = vec![0u8; TEN_MB];
 
             'OUTER: loop {
                 let mut buffer_offset = 0;
 
                 'INNER: while buffer_offset < buffer.len() {
-                    match buffered_fd.read(&mut buffer[buffer_offset..]) {
-                        Ok(n) => {
-                            buffer_offset += n;
-                            if n == 0 {
-                                has_read_all = true;
-                                break 'INNER;
-                            }
+                    if let Ok(n) = buffered_fd.read(&mut buffer[buffer_offset..]) {
+                        buffer_offset += n;
+
+                        if n == 0 {
+                            has_reached_eof = true;
+                            break 'INNER;
                         }
-                        Err(_) => {}
                     }
                 }
 
                 if buffer_offset > 0 {
-                    if let Err(e) = blob_tx.blocking_send(buffer[..buffer_offset].to_vec()) {
-                        eprintln!("Failed to send {} bytes blob data to blob builder task, over channel", e.0.len());
-                        exit(1);
+                    match blob_bytes_tx.lock() {
+                        Ok(mut blob_bytes) => {
+                            blob_bytes.extend_from_slice(&buffer[..buffer_offset]);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to acquire lock to send blob bytes to blob builder task: {:?}", e);
+                            exit(1);
+                        }
                     }
                 }
 
-                if has_read_all {
+                if has_reached_eof {
+                    if let Err(e) = blob_eof_tx.send(true) {
+                        eprintln!("Failed to let blob builder task inform that blob reading is complete: {:?}", e);
+                        exit(1);
+                    }
+
                     break 'OUTER;
                 }
             }
@@ -123,8 +134,13 @@ fn read_blob_data(blob_path: PathBuf, blob_tx: tokio::sync::mpsc::Sender<Vec<u8>
     }
 }
 
-fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>) -> BlobHeader {
+fn build_blob(
+    blob_bytes_rx: Arc<Mutex<Vec<u8>>>,
+    mut blob_eof_rx: tokio::sync::oneshot::Receiver<bool>,
+    chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>,
+) -> BlobHeader {
     let mut blob_builder = BlobBuilder::init();
+    let mut has_reached_eof = false;
 
     let mut progress = ConsoleStaticText::new(|| {
         let (rows, cols) = Term::stdout().size();
@@ -135,18 +151,38 @@ fn build_blob(mut blob_rx: tokio::sync::mpsc::Receiver<Vec<u8>>, chunk_tx: tokio
     });
     let now = Instant::now();
 
-    while let Some(buffer) = blob_rx.blocking_recv() {
-        if let Some(chunks) = blob_builder.update(&buffer) {
-            if let Err(e) = chunk_tx.blocking_send(chunks) {
-                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
+    loop {
+        match blob_eof_rx.try_recv() {
+            Ok(_) => has_reached_eof = true,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                eprintln!("Blob builder task exited without notifing EOF");
                 exit(1);
             }
+        }
 
-            progress.eprint(&format!(
-                "Processed {} in {:?}...",
-                format_bytes(blob_builder.num_bytes_absorbed_so_far()),
-                now.elapsed()
-            ));
+        match blob_bytes_rx.try_lock() {
+            Ok(mut blob_bytes) => {
+                let extracted_blob_bytes = std::mem::take(&mut *blob_bytes);
+
+                if let Some(chunks) = blob_builder.update(&extracted_blob_bytes) {
+                    if let Err(e) = chunk_tx.blocking_send(chunks) {
+                        eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
+                        exit(1);
+                    }
+
+                    progress.eprint(&format!(
+                        "Processed {} in {:?}...",
+                        format_bytes(blob_builder.num_bytes_absorbed_so_far()),
+                        now.elapsed()
+                    ));
+                }
+            }
+            Err(_) => {}
+        };
+
+        if has_reached_eof {
+            break;
         }
     }
 
