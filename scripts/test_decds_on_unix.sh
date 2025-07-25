@@ -61,6 +61,7 @@ ORIGINAL_HASH=$($SHA256CMD random.data | awk '{print $1}')
 
 # Build `decds` executable
 make build
+echo "Using $(./target/optimized/decds -V)"
 
 # Break blob into chunksets and verify each chunk's validity
 time ./target/optimized/decds break -b random.data -o broken
