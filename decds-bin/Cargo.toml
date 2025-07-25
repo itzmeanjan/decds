@@ -2,6 +2,7 @@
 name = "decds"
 description = "A CLI for Distributed Erasure-Coded Data Storage System"
 resolver = "3"
+build = "build.rs"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -17,9 +18,11 @@ clap = { workspace = true }
 rand = { workspace = true }
 const-hex = { workspace = true }
 blake3 = { workspace = true }
-decds-lib = { version = "=0.1.0", path = "../decds-lib" }
+decds-lib = { path = "../decds-lib" }
 num_cpus = { workspace = true }
-rayon = { workspace = true }
 tokio = { workspace = true }
 console_static_text = { workspace = true }
 console = { workspace = true }
+
+[build-dependencies]
+vergen-gix = { version = "1.0.9", features = ["build"] }
