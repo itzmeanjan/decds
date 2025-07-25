@@ -87,19 +87,6 @@ impl ChunkSet {
     pub fn get_chunk(&self, chunk_id: usize) -> Result<&chunk::ProofCarryingChunk, DecdsError> {
         self.chunks.get(chunk_id).ok_or(DecdsError::InvalidErasureCodedShareId(chunk_id))
     }
-
-    /// Appends a Merkle proof for the blob inclusion to all `ProofCarryingChunk`s within this `ChunkSet`.
-    /// This extends the chunkset-level proof to a blob-level proof for each chunk.
-    ///
-    /// # Arguments
-    ///
-    /// * `blob_proof` - A slice of `blake3::Hash` representing the Merkle path from the chunkset's
-    ///   root commitment to the blob's root commitment.
-    pub(crate) fn append_blob_inclusion_proof(&mut self, blob_proof: &[blake3::Hash]) {
-        if !blob_proof.is_empty() {
-            self.chunks.iter_mut().for_each(|chunk| chunk.append_proof_to_blob_root(blob_proof));
-        }
-    }
 }
 
 /// A structure designed to help incrementally reconstruct the original data of a `ChunkSet`
@@ -214,7 +201,7 @@ mod tests {
         DecdsError,
         chunk::ProofCarryingChunk,
         chunkset::{ChunkSet, RepairingChunkSet},
-        merkle_tree::{MerkleTree, tests::flip_a_bit},
+        merkle_tree::tests::flip_a_bit,
     };
     use rand::{Rng, seq::SliceRandom};
 
@@ -273,7 +260,7 @@ mod tests {
 
             let mut chunk_idx = 0;
             while !repairing_chunkset.is_ready_to_repair() {
-                repairing_chunkset.add_chunk(chunks[chunk_idx]).unwrap();
+                let _ = repairing_chunkset.add_chunk(chunks[chunk_idx]);
                 chunk_idx += 1;
             }
 
@@ -312,71 +299,6 @@ mod tests {
             chunkset.get_chunk(ChunkSet::NUM_ERASURE_CODED_CHUNKS + 100),
             Err(DecdsError::InvalidErasureCodedShareId(ChunkSet::NUM_ERASURE_CODED_CHUNKS + 100))
         );
-    }
-
-    #[test]
-    fn test_chunkset_append_blob_inclusion_proof_unit() {
-        let mut rng = rand::rng();
-
-        // 1. Create a base ChunkSet
-        let data_for_chunkset = (0..ChunkSet::BYTE_LENGTH).map(|_| rng.random()).collect::<Vec<u8>>();
-        let mut chunkset_1 = ChunkSet::new(1, data_for_chunkset.clone()).expect("Must be able to build erasure-coded ChunkSet");
-        let chunkset_1_commitment = chunkset_1.get_root_commitment();
-
-        // 2. Create mock blob-level Merkle tree leaves (chunkset roots)
-        // This mock tree will have chunkset_1_commitment at index 1
-        let mock_blob_leaves = vec![
-            blake3::hash(b"dummy_chunkset_root_0"), // Leaf 0
-            chunkset_1_commitment,                  // Leaf 1 (our chunkset_1's commitment)
-            blake3::hash(b"dummy_chunkset_root_2"), // Leaf 2
-            blake3::hash(b"dummy_chunkset_root_3"), // Leaf 3
-        ];
-
-        // 3. Build a mock blob MerkleTree
-        let mock_blob_merkle_tree = MerkleTree::new(mock_blob_leaves).expect("Must be able to build mock blob Merkle Tree");
-        let mock_blob_root_commitment = mock_blob_merkle_tree.get_root_commitment();
-
-        // 4. Generate the blob_proof for chunkset_1_commitment at its index (1)
-        let blob_proof_for_chunkset_1 = mock_blob_merkle_tree.generate_proof(1).expect("Must be able to generate blob proof");
-
-        // Take a chunk for validation BEFORE appending the blob proof
-        let chunk_before_append = chunkset_1.get_chunk(0).unwrap().clone();
-        // It should NOT validate against the blob root commitment yet because it doesn't have the blob proof
-        assert!(!chunk_before_append.validate_inclusion_in_blob(mock_blob_root_commitment));
-
-        // 5. Call the method under test: append_blob_inclusion_proof
-        chunkset_1.append_blob_inclusion_proof(&blob_proof_for_chunkset_1);
-
-        // 6. Verify the outcome using a chunk from the modified chunkset
-        let chunk_after_append = chunkset_1.get_chunk(0).unwrap();
-
-        // 7. Assert that validate_inclusion_in_blob now returns true
-        assert!(chunk_after_append.validate_inclusion_in_blob(mock_blob_root_commitment));
-
-        // Test with an empty blob_proof (should not change anything, i.e., validation still works)
-        chunkset_1.append_blob_inclusion_proof(&[]);
-        let chunk_after_empty_append = chunkset_1.get_chunk(0).unwrap();
-        assert!(chunk_after_empty_append.validate_inclusion_in_blob(mock_blob_root_commitment));
-
-        // Negative test: Tamper the proof and verify it fails
-        let mut tampered_blob_proof = blob_proof_for_chunkset_1.clone();
-        if !tampered_blob_proof.is_empty() {
-            // Flip a bit in the first hash of the proof to tamper it
-            let random_byte_index = rng.random_range(0..blake3::OUT_LEN);
-            let random_bit_index = rng.random_range(0..u8::BITS) as usize;
-
-            let mut bytes = [0u8; blake3::OUT_LEN];
-            bytes.copy_from_slice(tampered_blob_proof[0].as_bytes());
-            bytes[random_byte_index] = flip_a_bit(bytes[random_byte_index], random_bit_index);
-
-            tampered_blob_proof[0] = blake3::Hash::from_bytes(bytes);
-        }
-
-        let mut chunkset_1 = ChunkSet::new(1, data_for_chunkset).expect("Must be able to build erasure-coded ChunkSet");
-        chunkset_1.append_blob_inclusion_proof(&tampered_blob_proof);
-
-        let tampered_chunk = chunkset_1.get_chunk(0).unwrap();
-        assert!(!tampered_chunk.validate_inclusion_in_blob(mock_blob_root_commitment));
     }
 
     #[test]
@@ -444,8 +366,19 @@ mod tests {
         let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
         // Add fewer than NUM_ORIGINAL_CHUNKS chunks
-        for i in 0..(ChunkSet::NUM_ORIGINAL_CHUNKS - 1) {
-            repairing_chunkset.add_chunk(chunkset.get_chunk(i).unwrap()).unwrap();
+        let mut chunk_idx = 0;
+        let mut useful_count = 0;
+
+        while chunk_idx < ChunkSet::NUM_ERASURE_CODED_CHUNKS {
+            let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
+            if let Ok(_) = repairing_chunkset.add_chunk(chunk) {
+                useful_count += 1;
+            }
+
+            chunk_idx += 1;
+            if useful_count == ChunkSet::NUM_ORIGINAL_CHUNKS - 1 {
+                break;
+            }
         }
 
         assert!(!repairing_chunkset.is_ready_to_repair());
@@ -461,9 +394,9 @@ mod tests {
         let mut repairing_chunkset = RepairingChunkSet::new(0, chunkset.get_root_commitment());
 
         let mut chunk_idx = 0;
-        while !repairing_chunkset.is_ready_to_repair() {
+        while !repairing_chunkset.is_ready_to_repair() && chunk_idx < ChunkSet::NUM_ERASURE_CODED_CHUNKS {
             let chunk = chunkset.get_chunk(chunk_idx).expect("Must be able to lookup chunk by id");
-            repairing_chunkset.add_chunk(chunk).expect("Must be able to add valid chunk");
+            let _ = repairing_chunkset.add_chunk(chunk);
 
             chunk_idx += 1;
         }

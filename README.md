@@ -85,6 +85,13 @@ test decds-lib/src/lib.rs - (line 59) ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.71s
 ```
 
+For testing functional correctness of `decds` CLI, run following command on Unix-like environment.
+
+```bash
+# I've tested it on major Linux distributions and MacOS
+bash scripts/test_decds_on_unix.sh
+```
+
 ## Code Coverage
 To generate a detailed code coverage report in HTML format, use [cargo-tarpaulin](https://github.com/xd009642/tarpaulin):
 
@@ -98,32 +105,48 @@ This will create an HTML coverage report at `tarpaulin-report.html` that you can
 
 ```bash
 Coverage Results:
+Coverage Results:
 || Tested/Total Lines:
-|| decds-bin/src/utils.rs: 0/19
-|| decds-lib/src/blob.rs: 58/94
+|| decds-bin/src/handlers/handle_break.rs: 0/57
+|| decds-bin/src/utils.rs: 0/24
+|| decds-lib/src/blob.rs: 79/121
 || decds-lib/src/chunk.rs: 12/16
-|| decds-lib/src/chunkset.rs: 29/36
+|| decds-lib/src/chunkset.rs: 28/33
 || decds-lib/src/errors.rs: 0/18
 || decds-lib/src/merkle_tree.rs: 32/33
 || 
-60.65% coverage, 131/216 lines covered
+50.00% coverage, 151/302 lines covered
 ```
 
 ## Installation
 For hands-on experience, install `decds` on your `$HOME/.cargo/bin`.
 
 ```bash
-cargo install --profile optimized --git https://github.com/itzmeanjan/decds.git --locked
+# ------------------------------ System-wide installation ------------------------------
 
-# or
+RUSTFLAGS='-C target-cpu=native' cargo install --profile optimized --git https://github.com/itzmeanjan/decds.git --locked
+
+# Or, first clone and then install it yourself.
 
 git clone https://github.com/itzmeanjan/decds.git
 pushd decds
 make install
 popd
 
-# now, try following, assuming $HOME/.cargo/bin is on your $PATH.
+# Now, try following, assuming $HOME/.cargo/bin is on your $PATH.
 decds -V
+
+# For uninstalling `decds` executable from your system.
+rm $(which decds)
+
+# ----------------------------- Using from build directory -----------------------------
+
+git clone https://github.com/itzmeanjan/decds.git
+cd decds
+make build
+
+# Use executable from build directory
+./target/optimized/decds -V
 ```
 
 ## Usage

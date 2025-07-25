@@ -2,7 +2,7 @@ use crate::{
     RepairingChunkSet,
     chunk::{self, ProofCarryingChunk},
     chunkset::{self, ChunkSet},
-    consts::{DECDS_BINCODE_CONFIG, DECDS_NUM_ERASURE_CODED_SHARES},
+    consts::DECDS_BINCODE_CONFIG,
     errors::DecdsError,
     merkle_tree::MerkleTree,
 };
@@ -215,105 +215,178 @@ impl BlobHeader {
     }
 }
 
-/// Represents a complete, erasure-coded blob of data, consisting of a `BlobHeader` and a collection of `ChunkSet`s,
-/// each of which are holding 16 erasure-coded proof-of-inclusion carrying chunks.
-pub struct Blob {
-    header: BlobHeader,
-    body: Vec<chunkset::ChunkSet>,
+/// `BlobBuilder` provides an incremental way to construct a `Blob` from a stream of data.
+///
+/// This builder handles the division of input data into fixed-size `ChunkSet`s, prepares RLNC-based erasure-coded chunks,
+/// computes BLAKE3 digest of blob, and generates Merkle inclusion (in respective `Chunkset`s) proof for proof-carrying chunks.
+pub struct BlobBuilder {
+    hasher: blake3::Hasher,
+    num_bytes_absorbed: usize,
+    num_chunksets: usize,
+    offset: usize,
+    buffer: Vec<u8>,
+    chunkset_root_commitments: Vec<blake3::Hash>,
 }
 
-impl Blob {
-    /// Creates a new `Blob` from raw byte data.
+impl BlobBuilder {
+    /// Initializes a new `BlobBuilder` - ready to build a blob.
+    pub fn init() -> Self {
+        BlobBuilder {
+            hasher: blake3::Hasher::new(),
+            num_bytes_absorbed: 0,
+            num_chunksets: 0,
+            offset: 0,
+            buffer: vec![0u8; ChunkSet::BYTE_LENGTH],
+            chunkset_root_commitments: vec![],
+        }
+    }
+
+    pub fn num_bytes_absorbed_so_far(&self) -> usize {
+        self.num_bytes_absorbed
+    }
+
+    /// Updates the `BlobBuilder` with new data.
     ///
-    /// This involves:
-    /// 1. Calculating the blob's digest and padding its length to a multiple of `ChunkSet::BYTE_LENGTH`.
-    /// 2. Dividing the data into `ChunkSet`s and erasure-coding them individually.
-    /// 3. Building a Merkle tree over the chunksets' root commitments to create the blob's root commitment.
-    /// 4. Appending blob-level Merkle proofs to each chunk within the chunksets.
+    /// This method absorbs the provided `data` into the internal buffer. If enough
+    /// data accumulates to form a complete `ChunkSet`, it is processed (erasure-coded,
+    /// Merkle-proofed) and its resulting `ProofCarryingChunk`s are returned.
+    ///
+    /// You can call this method arbitrary number of times, before calling `Self::finalize`.
+    /// Note, you must call this method atleast once with non-empty input data, to not get
+    /// an error from `Self::finalize` - as you can't build a blob over empty input data.
     ///
     /// # Arguments
     ///
-    /// * `data` - The raw `Vec<u8>` representing the blob's content.
+    /// * `data` - A byte slice containing the new data to be processed.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<Vec<ProofCarryingChunk>>`.
+    /// - `Some(Vec<ProofCarryingChunk>)` if one or more `ChunkSet`s were completed and their chunks generated. These chunks carry Merkle proof-of-inclusion in respective Chunkset.
+    /// - `None` if no complete `ChunkSet` was formed or if the input `data` was empty.
+    pub fn update(&mut self, data: &[u8]) -> Option<Vec<ProofCarryingChunk>> {
+        if data.is_empty() {
+            return None;
+        }
+
+        self.hasher.update(data);
+        self.num_bytes_absorbed += data.len();
+
+        let total_num_bytes = self.offset + data.len();
+        let num_chunksets = total_num_bytes / ChunkSet::BYTE_LENGTH;
+
+        if num_chunksets == 0 {
+            self.buffer[self.offset..total_num_bytes].copy_from_slice(data);
+            self.offset = total_num_bytes;
+
+            return None;
+        } else {
+            let remaining_num_bytes = total_num_bytes - num_chunksets * ChunkSet::BYTE_LENGTH;
+            let dont_use_from_idx = data.len() - remaining_num_bytes;
+
+            let mut chunks = Vec::with_capacity(num_chunksets * ChunkSet::NUM_ERASURE_CODED_CHUNKS);
+
+            if num_chunksets == 1 {
+                self.buffer[self.offset..].copy_from_slice(&data[..dont_use_from_idx]);
+
+                let chunkset_id = self.num_chunksets;
+                let owned_buffer = std::mem::replace(&mut self.buffer, vec![0u8; ChunkSet::BYTE_LENGTH]);
+                let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, owned_buffer).unwrap_unchecked() };
+
+                chunks.extend((0..ChunkSet::NUM_ERASURE_CODED_CHUNKS).map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() }));
+                self.chunkset_root_commitments.push(chunkset.get_root_commitment());
+
+                self.num_chunksets += 1;
+            } else {
+                let mut working_mem = vec![0u8; num_chunksets * ChunkSet::BYTE_LENGTH];
+                working_mem[..self.offset].copy_from_slice(&self.buffer[..self.offset]);
+                working_mem[self.offset..].copy_from_slice(&data[..dont_use_from_idx]);
+
+                let mut chunkset_root_commitments = Vec::with_capacity(num_chunksets);
+                let mut nested_chunks: Vec<Vec<ProofCarryingChunk>> = Vec::with_capacity(num_chunksets);
+
+                working_mem
+                    .par_chunks_exact(ChunkSet::BYTE_LENGTH)
+                    .enumerate()
+                    .map(|(data_chunk_idx, data_chunk)| {
+                        let chunkset_id = self.num_chunksets + data_chunk_idx;
+                        let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, data_chunk.to_vec()).unwrap_unchecked() };
+
+                        (
+                            chunkset.get_root_commitment(),
+                            (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
+                                .map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
+                                .collect(),
+                        )
+                    })
+                    .unzip_into_vecs(&mut chunkset_root_commitments, &mut nested_chunks);
+
+                self.chunkset_root_commitments.append(&mut chunkset_root_commitments);
+                chunks.extend(nested_chunks.into_iter().flatten());
+
+                self.num_chunksets += num_chunksets;
+            }
+
+            if remaining_num_bytes > 0 {
+                self.buffer[..remaining_num_bytes].copy_from_slice(&data[dont_use_from_idx..]);
+                self.offset = remaining_num_bytes;
+            }
+
+            Some(chunks)
+        }
+    }
+
+    /// Finalizes the `BlobBuilder`, processing any remaining buffered data
+    /// and constructing the `BlobHeader`.
+    ///
+    /// This method pads any incomplete `ChunkSet` in the buffer with zeros,
+    /// processes it, computes the final blob digest, and builds the top-level
+    /// Merkle tree over chunkset root commitments, yielding the `BlobHeader`
+    /// and at max 16 proof-carrying chunks, if there was an incomplete chunkset,
+    /// which needed to be built.
     ///
     /// # Returns
     ///
     /// Returns a `Result` which is:
-    /// - `Ok(Self)` containing the newly created `Blob` if successful.
-    /// - `Err(DecdsError::EmptyDataForBlob)` if the input `data` is empty.
-    /// - Other `DecdsError` types may be returned from underlying `ChunkSet::new` or `MerkleTree::new` calls.
-    pub fn new(mut data: Vec<u8>) -> Result<Self, DecdsError> {
-        if data.is_empty() {
+    /// - `Ok((Vec<ProofCarryingChunk>, BlobHeader))` containing either 0 or 16 `ProofCarryingChunk`s from last chunkset and the `BlobHeader` for the complete blob.
+    /// - `Err(DecdsError::EmptyDataForBlob)` if no data was ever absorbed by the builder.
+    /// - Other `DecdsError` types may be returned from underlying `MerkleTree::new` calls.
+    pub fn finalize(mut self) -> Result<(Vec<ProofCarryingChunk>, BlobHeader), DecdsError> {
+        if self.num_bytes_absorbed == 0 {
             return Err(DecdsError::EmptyDataForBlob);
         }
 
-        let blob_digest = blake3::hash(&data);
-        let blob_length = data.len();
+        let chunks = if self.offset != 0 {
+            self.buffer[self.offset..].fill(0);
 
-        let num_chunksets = blob_length.div_ceil(chunkset::ChunkSet::BYTE_LENGTH);
-        let zero_padded_blob_len = num_chunksets * chunkset::ChunkSet::BYTE_LENGTH;
-        data.resize(zero_padded_blob_len, 0);
+            let chunkset_id = self.num_chunksets;
+            let chunkset = unsafe { chunkset::ChunkSet::new(chunkset_id, self.buffer).unwrap_unchecked() };
 
-        let mut chunksets = (0..num_chunksets)
-            .into_par_iter()
-            .map(|chunkset_id| {
-                let offset = chunkset_id * chunkset::ChunkSet::BYTE_LENGTH;
-                let till = offset + chunkset::ChunkSet::BYTE_LENGTH;
+            self.chunkset_root_commitments.push(chunkset.get_root_commitment());
+            self.num_chunksets += 1;
 
-                unsafe { chunkset::ChunkSet::new(chunkset_id, data[offset..till].to_vec()).unwrap_unchecked() }
-            })
-            .collect::<Vec<chunkset::ChunkSet>>();
+            (0..ChunkSet::NUM_ERASURE_CODED_CHUNKS)
+                .map(|chunk_id| unsafe { chunkset.get_chunk(chunk_id).unwrap_unchecked().clone() })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        let merkle_leaves = chunksets.iter().map(|chunkset| chunkset.get_root_commitment()).collect::<Vec<blake3::Hash>>();
-        let merkle_tree = MerkleTree::new(merkle_leaves)?;
-        let commitment = merkle_tree.get_root_commitment();
+        let blob_digest = self.hasher.finalize();
 
-        chunksets.par_iter_mut().enumerate().for_each(|(chunkset_idx, chunkset)| {
-            let blob_proof = unsafe { merkle_tree.generate_proof(chunkset_idx).unwrap_unchecked() };
-            chunkset.append_blob_inclusion_proof(&blob_proof);
-        });
+        let merkle_tree = MerkleTree::new(self.chunkset_root_commitments.clone())?;
+        let blob_root_commitment = merkle_tree.get_root_commitment();
 
-        Ok(Blob {
-            header: BlobHeader {
-                byte_length: blob_length,
-                num_chunksets,
+        Ok((
+            chunks,
+            BlobHeader {
+                byte_length: self.num_bytes_absorbed,
+                num_chunksets: self.num_chunksets,
                 digest: blob_digest,
-                root_commitment: commitment,
-                chunkset_root_commitments: chunksets.iter().map(|chunkset| chunkset.get_root_commitment()).collect(),
+                root_commitment: blob_root_commitment,
+                chunkset_root_commitments: self.chunkset_root_commitments,
             },
-            body: chunksets,
-        })
-    }
-
-    /// Returns a reference to the `BlobHeader` of this blob.
-    pub fn get_blob_header(&self) -> &BlobHeader {
-        &self.header
-    }
-
-    /// Retrieves a specific "share" (a collection of erasure-coded chunks, one from each chunkset)
-    /// based on the `share_id`.
-    ///
-    /// Each share represents a vertical slice through the blob's chunksets.
-    ///
-    /// # Arguments
-    ///
-    /// * `share_id` - The ID of the share to retrieve (`0` to `DECDS_NUM_ERASURE_CODED_SHARES - 1`).
-    ///
-    /// # Returns
-    ///
-    /// Returns a `Result` which is:
-    /// - `Ok(Vec<ProofCarryingChunk>)` containing a vector of proof-carrying chunks for the requested share.
-    /// - `Err(DecdsError::InvalidErasureCodedShareId)` if `share_id` is out of bounds.
-    pub fn get_share(&self, share_id: usize) -> Result<Vec<ProofCarryingChunk>, DecdsError> {
-        if share_id >= DECDS_NUM_ERASURE_CODED_SHARES {
-            return Err(DecdsError::InvalidErasureCodedShareId(share_id));
-        }
-
-        Ok((0..self.header.num_chunksets)
-            .map(|chunkset_id| unsafe {
-                let chunkset = &self.body[chunkset_id];
-                chunkset.get_chunk(share_id).unwrap_unchecked().clone()
-            })
-            .collect::<Vec<ProofCarryingChunk>>())
+        ))
     }
 }
 
@@ -475,9 +548,11 @@ impl RepairingBlob {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BlobHeader, ProofCarryingChunk, RepairingBlob, blob::Blob, chunkset::ChunkSet, consts, errors::DecdsError};
+    use crate::{BlobHeader, RepairingBlob, blob::BlobBuilder, chunkset::ChunkSet, errors::DecdsError, merkle_tree::MerkleTree};
     use blake3;
     use rand::Rng;
+    use rayon::prelude::*;
+    use std::collections::HashMap;
 
     #[test]
     fn prop_test_blob_preparation_and_commitment_works() {
@@ -492,14 +567,35 @@ mod tests {
             let blob_byte_len = rng.random_range(MIN_BLOB_DATA_BYTE_LEN..=MAX_BLOB_DATA_BYTE_LEN);
             let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-            let blob = Blob::new(blob_data).expect("Must be able to prepare blob");
-            let blob_header = blob.get_blob_header();
+            let (mut chunks, blob_header) = {
+                let mut all_chunks = Vec::new();
 
-            assert!(
-                (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
-                    .flat_map(|share_id| blob.get_share(share_id).expect("Must be able to get erasure coded shares"))
-                    .all(|share| blob_header.validate_chunk(&share))
-            );
+                let mut blob_builder = BlobBuilder::init();
+                if let Some(chunks) = blob_builder.update(&blob_data) {
+                    all_chunks.extend(chunks);
+                }
+
+                let (chunks, blob_header) = blob_builder.finalize().expect("Must be able to prepare blob");
+                all_chunks.extend(chunks);
+
+                (all_chunks, blob_header)
+            };
+
+            let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+                .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
+                .collect();
+
+            let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+            let merkle_proofs = (0..blob_header.get_num_chunksets())
+                .into_par_iter()
+                .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+                .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+
+            chunks.par_iter_mut().for_each(|chunk| {
+                chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+            });
+
+            assert!(chunks.iter().all(|chunk| { blob_header.validate_chunk(chunk) }));
         });
     }
 
@@ -507,11 +603,22 @@ mod tests {
     fn test_get_chunkset_commitment() {
         let mut rng = rand::rng();
 
-        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2;
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data).unwrap();
-        let header = blob.get_blob_header();
+        let (_, header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         // Valid chunkset ID
         let commitment = header.get_chunkset_commitment(0);
@@ -530,11 +637,22 @@ mod tests {
         let mut rng = rand::rng();
 
         // Blob size: 2.5 chunksets -> 2 full, 1 half
-        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2;
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data).unwrap();
-        let header = blob.get_blob_header();
+        let (_, header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         // Full chunkset
         assert_eq!(header.get_chunkset_size(0).unwrap(), ChunkSet::BYTE_LENGTH);
@@ -554,11 +672,22 @@ mod tests {
     fn test_get_byte_range_for_chunkset() {
         let mut rng = rand::rng();
 
-        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2;
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data).unwrap();
-        let header = blob.get_blob_header();
+        let (_, header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         // First chunkset
         assert_eq!(header.get_byte_range_for_chunkset(0).unwrap(), (0, ChunkSet::BYTE_LENGTH));
@@ -583,11 +712,22 @@ mod tests {
     fn test_get_chunkset_ids_for_byte_range() {
         let mut rng = rand::rng();
 
-        let blob_byte_len = (ChunkSet::BYTE_LENGTH * 2) + (ChunkSet::BYTE_LENGTH / 2);
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2;
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data).unwrap();
-        let header = blob.get_blob_header();
+        let (_, header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         // Range within a single chunkset
         assert_eq!(header.get_chunkset_ids_for_byte_range(0..10).unwrap(), vec![0]);
@@ -636,8 +776,19 @@ mod tests {
         let blob_byte_len = ChunkSet::BYTE_LENGTH * 3;
         let blob_data = (0..blob_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
 
-        let blob = Blob::new(blob_data).unwrap();
-        let original_header = blob.get_blob_header().clone();
+        let (_, original_header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         let serialized_header = original_header.to_bytes().expect("Header serialization failed");
         let (deserialized_header, bytes_read) = BlobHeader::from_bytes(&serialized_header).expect("Header deserialization failed");
@@ -651,38 +802,29 @@ mod tests {
 
     #[test]
     fn test_blob_new_empty_data() {
-        assert_eq!(Blob::new(Vec::new()).err(), Some(DecdsError::EmptyDataForBlob));
-    }
-
-    #[test]
-    fn test_blob_get_share_invalid_id() {
-        let mut rng = rand::rng();
-
-        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2)).map(|_| rng.random()).collect();
-        let blob = Blob::new(blob_data).unwrap();
-
-        // Test with an invalid share ID (out of bounds)
-        let invalid_share_id = consts::DECDS_NUM_ERASURE_CODED_SHARES;
-        assert_eq!(
-            blob.get_share(invalid_share_id).unwrap_err(),
-            DecdsError::InvalidErasureCodedShareId(invalid_share_id)
-        );
-
-        // Test with a very large invalid share ID
-        let large_invalid_share_id = consts::DECDS_NUM_ERASURE_CODED_SHARES + 100;
-        assert_eq!(
-            blob.get_share(large_invalid_share_id).unwrap_err(),
-            DecdsError::InvalidErasureCodedShareId(large_invalid_share_id)
-        );
+        assert_eq!(BlobBuilder::init().finalize().err(), Some(DecdsError::EmptyDataForBlob));
     }
 
     #[test]
     fn test_repairing_blob_new() {
         let mut rng = rand::rng();
 
-        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2)).map(|_| rng.random()).collect();
-        let blob = Blob::new(blob_data).unwrap();
-        let header = blob.get_blob_header().clone();
+        let blob_byte_len = ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2;
+        let blob_data: Vec<u8> = (0..blob_byte_len).map(|_| rng.random()).collect();
+
+        let (_, header) = {
+            let mut all_chunks = Vec::new();
+
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
 
         let repairer = RepairingBlob::new(header.clone());
 
@@ -702,18 +844,40 @@ mod tests {
     fn test_repairing_blob_add_chunk() {
         let mut rng = rand::rng();
 
-        let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2)).map(|_| rng.random()).collect(); // Two full chunksets
-        let blob = Blob::new(blob_data).unwrap();
+        let blob_data: Vec<u8> = (0..ChunkSet::BYTE_LENGTH * 2).map(|_| rng.random()).collect(); // Two full chunksets
 
-        let blob_header = blob.get_blob_header().clone();
-        let mut repairer = RepairingBlob::new(blob_header.clone());
+        let (mut chunks, blob_header) = {
+            let mut all_chunks = Vec::new();
 
-        let all_chunks: Vec<ProofCarryingChunk> = (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
-            .flat_map(|share_id| blob.get_share(share_id).unwrap())
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
+
+        let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+            .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
             .collect();
 
+        let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+        let merkle_proofs = (0..blob_header.get_num_chunksets())
+            .into_par_iter()
+            .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+            .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+
+        chunks.par_iter_mut().for_each(|chunk| {
+            chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+        });
+
+        let mut repairer = RepairingBlob::new(blob_header.clone());
+
         // Test valid chunk addition
-        let chunk_to_add = &all_chunks[0];
+        let chunk_to_add = &chunks[0];
         assert!(repairer.add_chunk(chunk_to_add).is_ok());
 
         // Simulate an invalid chunk proof by creating a new header with a different root commitment
@@ -728,11 +892,11 @@ mod tests {
 
         // Add enough chunks to make a chunkset ready for repair
         let mut repairer_ready = RepairingBlob::new(blob_header.clone());
-        let chunkset_id = all_chunks[0].get_chunkset_id();
+        let chunkset_id = chunks[0].get_chunkset_id();
 
-        for chunk in &all_chunks {
+        for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id {
-                repairer_ready.add_chunk(chunk).unwrap();
+                let _ = repairer_ready.add_chunk(chunk);
 
                 if repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap() {
                     break;
@@ -743,9 +907,9 @@ mod tests {
         assert!(repairer_ready.is_chunkset_ready_to_repair(chunkset_id).unwrap());
 
         // Try adding another chunk to a chunkset already ready for repair
-        let extra_chunk = &all_chunks
+        let extra_chunk = &chunks
             .iter()
-            .find(|c| c.get_chunkset_id() == chunkset_id && c.get_global_chunk_id() != all_chunks[0].get_global_chunk_id())
+            .find(|c| c.get_chunkset_id() == chunkset_id && c.get_global_chunk_id() != chunks[0].get_global_chunk_id())
             .unwrap();
 
         assert_eq!(
@@ -769,14 +933,37 @@ mod tests {
         let mut rng = rand::rng();
 
         let blob_data: Vec<u8> = (0..(ChunkSet::BYTE_LENGTH * 2 + ChunkSet::BYTE_LENGTH / 2)).map(|_| rng.random()).collect();
-        let blob = Blob::new(blob_data.clone()).unwrap();
+        let original_blob_data_copy = blob_data.clone();
 
-        let blob_header = blob.get_blob_header().clone();
-        let mut repairer = RepairingBlob::new(blob_header.clone());
+        let (mut chunks, blob_header) = {
+            let mut all_chunks = Vec::new();
 
-        let all_chunks: Vec<ProofCarryingChunk> = (0..consts::DECDS_NUM_ERASURE_CODED_SHARES)
-            .flat_map(|share_id| blob.get_share(share_id).unwrap())
+            let mut blob_builder = BlobBuilder::init();
+            if let Some(chunks) = blob_builder.update(&blob_data) {
+                all_chunks.extend(chunks);
+            }
+
+            let (chunks, header) = blob_builder.finalize().expect("Must be able to prepare blob");
+            all_chunks.extend(chunks);
+
+            (all_chunks, header)
+        };
+
+        let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+            .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
             .collect();
+
+        let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+        let merkle_proofs = (0..blob_header.get_num_chunksets())
+            .into_par_iter()
+            .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+            .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+
+        chunks.par_iter_mut().for_each(|chunk| {
+            chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+        });
+
+        let mut repairer = RepairingBlob::new(blob_header.clone());
 
         // Test `ChunksetNotYetReadyToRepair`
         let chunkset_id_0 = 0;
@@ -786,9 +973,9 @@ mod tests {
         );
 
         // Add enough chunks for the first chunkset
-        for chunk in &all_chunks {
+        for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id_0 {
-                repairer.add_chunk(chunk).unwrap();
+                let _ = repairer.add_chunk(chunk);
 
                 if repairer.is_chunkset_ready_to_repair(chunkset_id_0).unwrap() {
                     break;
@@ -799,7 +986,7 @@ mod tests {
 
         // Test successful repair
         let repaired_data_0 = repairer.get_repaired_chunkset(chunkset_id_0).unwrap();
-        let expected_data_0 = blob_data[0..ChunkSet::BYTE_LENGTH].to_vec();
+        let expected_data_0 = original_blob_data_copy[0..ChunkSet::BYTE_LENGTH].to_vec();
 
         assert_eq!(repaired_data_0, expected_data_0);
         assert!(repairer.is_chunkset_already_repaired(chunkset_id_0).unwrap());
@@ -813,9 +1000,9 @@ mod tests {
         // Test for a partial last chunkset
         let chunkset_id_2 = 2;
 
-        for chunk in &all_chunks {
+        for chunk in &chunks {
             if chunk.get_chunkset_id() == chunkset_id_2 {
-                repairer.add_chunk(chunk).unwrap();
+                let _ = repairer.add_chunk(chunk);
 
                 if repairer.is_chunkset_ready_to_repair(chunkset_id_2).unwrap() {
                     break;
@@ -825,7 +1012,7 @@ mod tests {
         assert!(repairer.is_chunkset_ready_to_repair(chunkset_id_2).unwrap());
 
         let repaired_data_2 = repairer.get_repaired_chunkset(chunkset_id_2).unwrap();
-        let expected_data_2 = blob_data[ChunkSet::BYTE_LENGTH * 2..].to_vec();
+        let expected_data_2 = original_blob_data_copy[ChunkSet::BYTE_LENGTH * 2..].to_vec();
         assert_eq!(repaired_data_2, expected_data_2);
 
         // Test invalid chunkset ID

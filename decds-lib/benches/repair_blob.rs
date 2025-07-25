@@ -1,6 +1,7 @@
-use decds_lib::{Blob, DECDS_NUM_ERASURE_CODED_SHARES, ProofCarryingChunk, RepairingBlob};
+use decds_lib::{BlobBuilder, MerkleTree, RepairingBlob};
 use rand::{Rng, seq::SliceRandom};
-use std::{fmt::Debug, time::Duration};
+use rayon::prelude::*;
+use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -46,15 +47,36 @@ fn repair_blob(bencher: divan::Bencher, rlnc_config: &BlobConfig) {
         .with_inputs(|| {
             let mut rng = rand::rng();
             let data = (0..rlnc_config.data_byte_len).map(|_| rng.random()).collect::<Vec<u8>>();
-            let blob = unsafe { Blob::new(data).unwrap_unchecked() };
+            let (mut chunks, blob_header) = {
+                let mut all_chunks = Vec::new();
 
-            let blob_header = blob.get_blob_header();
-            let mut blob_shares = (0..(DECDS_NUM_ERASURE_CODED_SHARES - 4))
-                .flat_map(|share_id| unsafe { blob.get_share(share_id).unwrap_unchecked() })
-                .collect::<Vec<ProofCarryingChunk>>();
-            blob_shares.shuffle(&mut rng);
+                let mut blob_builder = BlobBuilder::init();
+                if let Some(chunks) = blob_builder.update(&data) {
+                    all_chunks.extend(chunks);
+                }
 
-            (blob_header.to_owned(), blob_shares)
+                let (chunks, blob_header) = blob_builder.finalize().expect("Must be able to prepare blob");
+                all_chunks.extend(chunks);
+
+                (all_chunks, blob_header)
+            };
+
+            let chunkset_root_commitments = (0..blob_header.get_num_chunksets())
+                .map(|chunkset_id| unsafe { blob_header.get_chunkset_commitment(chunkset_id).unwrap_unchecked() })
+                .collect();
+
+            let merkle_tree = MerkleTree::new(chunkset_root_commitments).expect("Must be able to build Merkle tree");
+            let merkle_proofs = (0..blob_header.get_num_chunksets())
+                .into_par_iter()
+                .map(|chunkset_id| unsafe { (chunkset_id, merkle_tree.generate_proof(chunkset_id).unwrap_unchecked()) })
+                .collect::<HashMap<usize, Vec<blake3::Hash>>>();
+
+            chunks.par_iter_mut().for_each(|chunk| {
+                chunk.append_proof_to_blob_root(&merkle_proofs[&chunk.get_chunkset_id()]);
+            });
+
+            chunks.shuffle(&mut rng);
+            (blob_header.to_owned(), chunks)
         })
         .input_counter(|(header, _)| divan::counter::BytesCount::new(header.get_blob_size()))
         .bench_values(|(header, chunks)| {

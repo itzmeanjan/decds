@@ -5,16 +5,17 @@ use std::{path::PathBuf, process::exit, str::FromStr};
 use crate::errors::DecdsCLIError;
 
 pub fn format_bytes(bytes: usize) -> String {
-    let suffixes = ["B", "KB", "MB", "GB"];
+    const SUFFIXES: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+
     let mut index = 0;
     let mut size = bytes as f64;
 
-    while size >= 1024.0 && index < suffixes.len() - 1 {
-        size /= 1024.0;
+    while size >= 1024f64 && index < SUFFIXES.len() - 1 {
+        size /= 1024f64;
         index += 1;
     }
 
-    format!("{:.1}{}", size, suffixes[index])
+    format!("{:.2}{}", size, SUFFIXES[index])
 }
 
 pub fn read_blob_metadata(blob_metadata_path: &PathBuf) -> BlobHeader {

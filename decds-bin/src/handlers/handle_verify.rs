@@ -15,7 +15,7 @@ pub fn handle_verify_command(blob_dir_path: &PathBuf) {
     let blob_metadata = read_blob_metadata(&blob_metadata_path);
 
     println!("Original blob size: {}", format_bytes(blob_metadata.get_blob_size()));
-    println!("Original blob BLAKE3 Digest: {}", blob_metadata.get_blob_digest());
+    println!("Original blob BLAKE3 digest: {}", blob_metadata.get_blob_digest());
     println!("Original blob root commitment: {}", blob_metadata.get_root_commitment());
     println!("Original blob number of chunksets: {}", blob_metadata.get_num_chunksets());
     println!("Original blob number of chunks: {}", blob_metadata.get_num_chunks());
@@ -40,25 +40,31 @@ fn verify_erasure_coded_chunks_and_report(target_dir: &PathBuf, blob_metadata: &
                 blob_share_path.push(format!("share{:02}.data", share_id));
                 indent.push('\t');
 
-                let share_stat_log = if let Ok(ok) = blob_share_path.try_exists()
-                    && ok
-                {
-                    match read_proof_carrying_chunk(&blob_share_path) {
-                        Ok(chunk) => {
-                            if blob_metadata.validate_chunk(&chunk) {
-                                num_valid_shares += 1;
-                                format!("{}- {}\t✅", indent, blob_share_path.file_name().unwrap().to_str().unwrap())
-                            } else {
-                                format!(
-                                    "{}- {}\t🚫\tError: proof verification failed",
-                                    indent,
-                                    blob_share_path.file_name().unwrap().to_str().unwrap()
-                                )
+                let share_stat_log = if let Ok(ok) = blob_share_path.try_exists() {
+                    if ok {
+                        match read_proof_carrying_chunk(&blob_share_path) {
+                            Ok(chunk) => {
+                                if blob_metadata.validate_chunk(&chunk) {
+                                    num_valid_shares += 1;
+                                    format!("{}- {}\t✅", indent, blob_share_path.file_name().unwrap().to_str().unwrap())
+                                } else {
+                                    format!(
+                                        "{}- {}\t🚫\tError: proof verification failed",
+                                        indent,
+                                        blob_share_path.file_name().unwrap().to_str().unwrap()
+                                    )
+                                }
+                            }
+                            Err(e) => {
+                                format!("{}- {}\t🚫\tError: {}", indent, blob_share_path.file_name().unwrap().to_str().unwrap(), e)
                             }
                         }
-                        Err(e) => {
-                            format!("{}- {}\t🚫\tError: {}", indent, blob_share_path.file_name().unwrap().to_str().unwrap(), e)
-                        }
+                    } else {
+                        format!(
+                            "{}- {}\t🚫\tError: chunk not present",
+                            indent,
+                            blob_share_path.file_name().unwrap().to_str().unwrap()
+                        )
                     }
                 } else {
                     format!(

@@ -26,15 +26,22 @@ jobs:
 
             windows-latest, # x86_64
             windows-11-arm, # arm64
-          ]
+        ]
+        rust: [
+          1.85.0, # MSRV of this project
+          stable
+        ]
+      max-parallel: 4
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
 
-      - name: Build and Test on ${{ matrix.os }}
+      - name: Build and Test on ${{ matrix.os }}, with Rust ${{ matrix.rust }}
         run: make test
 
-      - name: Test decds CLI on Linux/Mac
+      - name: Test `decds` CLI on ${{ matrix.os }}, with Rust ${{ matrix.rust }}
         if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: bash scripts/test_decds_on_linux.sh
+        run: bash scripts/test_decds_on_unix.sh

@@ -3,7 +3,7 @@ members = ["decds-lib", "decds-bin"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Anjan Roy <hello@itzmeanjan.in>"]
@@ -21,19 +21,24 @@ categories = ["cryptography", "compression", "encoding"]
 
 [workspace.dependencies]
 blake3 = { version = "=1.8.2", features = ["serde"] }
-rlnc = { version = "=0.4.0" }
+rlnc = { version = "=0.7.0" }
 rand = "=0.9.1"
 serde = { version = "=1.0.219", features = ["derive"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
 rayon = "=1.10.0"
 clap = { version = "=4.5.41", features = ["derive"] }
 const-hex = "=1.14.1"
+num_cpus = "=1.17.0"
+tokio = { version = "=1.46.1", features = ["full"] }
+console_static_text = "=0.8.3"
+console = "=0.16.0"
 
 [profile.optimized]
 inherits = "release"
 codegen-units = 1
 lto = "thin"
 panic = "abort"
+opt-level = 3
 
 [profile.test-release]
 inherits = "release"

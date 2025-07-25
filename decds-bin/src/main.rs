@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "decds", version, about, long_about = None)]
+#[command(name = "decds", version = concat!(env!("CARGO_PKG_VERSION"), " ", "(", env!("VERGEN_GIT_SHA"), " ", env!("VERGEN_BUILD_DATE"), ")"), about, long_about = None)]
 struct DecdsCLI {
     #[command(subcommand)]
     command: DecdsCommand,

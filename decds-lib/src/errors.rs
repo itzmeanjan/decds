@@ -1,6 +1,7 @@
 use crate::{chunkset::ChunkSet, consts};
 
-#[derive(Debug, PartialEq)]
+/// Errors encountered by `decds` during blob building and repairing.
+#[derive(PartialEq)]
 pub enum DecdsError {
     /// Returned when trying to create a blob with empty data.
     EmptyDataForBlob,
@@ -82,3 +83,11 @@ impl std::fmt::Display for DecdsError {
         }
     }
 }
+
+impl std::fmt::Debug for DecdsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl std::error::Error for DecdsError {}
