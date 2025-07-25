@@ -1,5 +1,6 @@
 use crate::{chunkset::ChunkSet, consts};
 
+/// Errors encountered by `decds` during blob building and repairing.
 #[derive(PartialEq)]
 pub enum DecdsError {
     /// Returned when trying to create a blob with empty data.
