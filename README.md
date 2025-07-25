@@ -85,6 +85,13 @@ test decds-lib/src/lib.rs - (line 59) ... ok
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.71s
 ```
 
+For testing functional correctness of `decds` CLI, run following command on Unix-like environment.
+
+```bash
+# I've tested it on major Linux distributions and MacOS
+bash scripts/test_decds_on_unix.sh
+```
+
 ## Code Coverage
 To generate a detailed code coverage report in HTML format, use [cargo-tarpaulin](https://github.com/xd009642/tarpaulin):
 
