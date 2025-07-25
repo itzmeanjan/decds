@@ -422,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "decds"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "clap",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "decds-lib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "blake3",
