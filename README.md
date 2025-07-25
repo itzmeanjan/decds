@@ -115,15 +115,23 @@ For hands-on experience, install `decds` on your `$HOME/.cargo/bin`.
 ```bash
 cargo install --profile optimized --git https://github.com/itzmeanjan/decds.git --locked
 
-# or
+# Or
 
 git clone https://github.com/itzmeanjan/decds.git
 pushd decds
 make install
 popd
 
-# now, try following, assuming $HOME/.cargo/bin is on your $PATH.
+# Now, try following, assuming $HOME/.cargo/bin is on your $PATH.
 decds -V
+
+# If you don't want to install `decds` binary system-wide
+git clone https://github.com/itzmeanjan/decds.git
+cd decds
+make build
+
+# Use executable from build directory
+./target/optimized/decds -V
 ```
 
 ## Usage
