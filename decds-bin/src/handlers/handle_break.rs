@@ -51,15 +51,17 @@ pub fn handle_break_command(blob_path: &PathBuf, opt_target_dir: &Option<PathBuf
 }
 
 async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: PathBuf) -> BlobHeader {
-    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Vec<ProofCarryingChunk>>(num_cpus::get() * 4);
-
     let blob_bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
     let (blob_bytes_tx, blob_bytes_rx) = (blob_bytes.clone(), blob_bytes.clone());
-    let (blob_eof_tx, blob_eof_rx) = tokio::sync::oneshot::channel::<bool>();
+    let (blob_eof_notifier_tx, blob_eof_notifier_rx) = tokio::sync::oneshot::channel::<bool>();
 
-    let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_bytes_tx, blob_eof_tx));
-    let blob_builder_task = tokio::task::spawn_blocking(move || build_blob(blob_bytes_rx, blob_eof_rx, chunk_tx));
-    let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path, chunk_rx));
+    let chunks = Arc::new(Mutex::new(Vec::<ProofCarryingChunk>::new()));
+    let (chunks_tx, chunks_rx) = (chunks.clone(), chunks.clone());
+    let (chunks_end_notifier_tx, chunks_end_notifier_rx) = tokio::sync::oneshot::channel::<bool>();
+
+    let blob_reader_task = tokio::task::spawn_blocking(move || read_blob_data(blob_path, blob_bytes_tx, blob_eof_notifier_tx));
+    let blob_builder_task = tokio::task::spawn_blocking(move || build_blob(blob_bytes_rx, blob_eof_notifier_rx, chunks_tx, chunks_end_notifier_tx));
+    let chunk_writer_task = tokio::task::spawn(write_partial_chunks(target_dir_path, chunks_rx, chunks_end_notifier_rx));
 
     if let Err(e) = blob_reader_task.await {
         eprintln!("Blob reader task failed to finish: {:?}", e);
@@ -80,7 +82,7 @@ async fn read_blob_and_partially_chunkify(blob_path: PathBuf, target_dir_path: P
     }
 }
 
-fn read_blob_data(blob_path: PathBuf, blob_bytes_tx: Arc<Mutex<Vec<u8>>>, blob_eof_tx: tokio::sync::oneshot::Sender<bool>) {
+fn read_blob_data(blob_path: PathBuf, blob_bytes_tx: Arc<Mutex<Vec<u8>>>, blob_eof_notifier_tx: tokio::sync::oneshot::Sender<bool>) {
     match std::fs::OpenOptions::new().read(true).open(&blob_path) {
         Ok(fd) => {
             const ONE_MB: usize = 1usize << 20;
@@ -118,8 +120,8 @@ fn read_blob_data(blob_path: PathBuf, blob_bytes_tx: Arc<Mutex<Vec<u8>>>, blob_e
                 }
 
                 if has_reached_eof {
-                    if let Err(e) = blob_eof_tx.send(true) {
-                        eprintln!("Failed to let blob builder task inform that blob reading is complete: {:?}", e);
+                    if let Err(e) = blob_eof_notifier_tx.send(true) {
+                        eprintln!("Failed to inform blob builder task that blob reading is complete: {:?}", e);
                         exit(1);
                     }
 
@@ -136,8 +138,9 @@ fn read_blob_data(blob_path: PathBuf, blob_bytes_tx: Arc<Mutex<Vec<u8>>>, blob_e
 
 fn build_blob(
     blob_bytes_rx: Arc<Mutex<Vec<u8>>>,
-    mut blob_eof_rx: tokio::sync::oneshot::Receiver<bool>,
-    chunk_tx: tokio::sync::mpsc::Sender<Vec<ProofCarryingChunk>>,
+    mut blob_eof_notifier_rx: tokio::sync::oneshot::Receiver<bool>,
+    chunks_tx: Arc<Mutex<Vec<ProofCarryingChunk>>>,
+    chunks_end_notifier_tx: tokio::sync::oneshot::Sender<bool>,
 ) -> BlobHeader {
     let mut blob_builder = BlobBuilder::init();
     let mut has_reached_eof = false;
@@ -152,11 +155,11 @@ fn build_blob(
     let now = Instant::now();
 
     loop {
-        match blob_eof_rx.try_recv() {
+        match blob_eof_notifier_rx.try_recv() {
             Ok(_) => has_reached_eof = true,
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                eprintln!("Blob builder task exited without notifing EOF");
+                eprintln!("Blob reader task exited without notifing EOF");
                 exit(1);
             }
         }
@@ -165,11 +168,16 @@ fn build_blob(
             Ok(mut blob_bytes) => {
                 let extracted_blob_bytes = std::mem::take(&mut *blob_bytes);
 
-                if let Some(chunks) = blob_builder.update(&extracted_blob_bytes) {
-                    if let Err(e) = chunk_tx.blocking_send(chunks) {
-                        eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
-                        exit(1);
-                    }
+                if let Some(mut chunks) = blob_builder.update(&extracted_blob_bytes) {
+                    match chunks_tx.lock() {
+                        Ok(mut partial_chunks) => {
+                            partial_chunks.append(&mut chunks);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to acquire lock to send erasure-coded chunks to chunk writer task: {:?}", e);
+                            exit(1);
+                        }
+                    };
 
                     progress.eprint(&format!(
                         "Processed {} in {:?}...",
@@ -179,7 +187,7 @@ fn build_blob(
                 }
             }
             Err(_) => {}
-        };
+        }
 
         if has_reached_eof {
             break;
@@ -187,9 +195,19 @@ fn build_blob(
     }
 
     match blob_builder.finalize() {
-        Ok((chunks, blob_header)) => {
-            if let Err(e) = chunk_tx.blocking_send(chunks) {
-                eprintln!("Failed to send {} erasure-coded chunks to chunk writer task, over channel", e.0.len());
+        Ok((mut chunks, blob_header)) => {
+            match chunks_tx.lock() {
+                Ok(mut partial_chunks) => {
+                    partial_chunks.append(&mut chunks);
+                }
+                Err(e) => {
+                    eprintln!("Failed to acquire lock to send erasure-coded chunks to chunk writer task: {:?}", e);
+                    exit(1);
+                }
+            };
+
+            if let Err(e) = chunks_end_notifier_tx.send(true) {
+                eprintln!("Failed to inform chunk writer task that no more chunks are coming: {:?}", e);
                 exit(1);
             }
 
@@ -203,37 +221,59 @@ fn build_blob(
     }
 }
 
-async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::sync::mpsc::Receiver<Vec<ProofCarryingChunk>>) {
+async fn write_partial_chunks(
+    target_dir_path: PathBuf,
+    chunks_rx: Arc<Mutex<Vec<ProofCarryingChunk>>>,
+    mut chunks_end_notifier_rx: tokio::sync::oneshot::Receiver<bool>,
+) {
     let max_num_pending_spawned_tasks: usize = num_cpus::get() * 4;
+
     let mut join_handles = JoinSet::new();
+    let mut has_reached_eof = false;
 
-    while let Some(chunks) = chunk_rx.recv().await {
-        for chunk in chunks {
-            let mut blob_share_path = target_dir_path.clone();
+    loop {
+        match chunks_end_notifier_rx.try_recv() {
+            Ok(_) => has_reached_eof = true,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                eprintln!("Blob builder task exited without notifing EOF");
+                exit(1);
+            }
+        }
 
-            join_handles.spawn(async move {
-                match chunk.to_bytes() {
-                    Ok(bytes) => {
-                        blob_share_path.push(format!("chunkset.{}", chunk.get_chunkset_id()));
+        match chunks_rx.try_lock() {
+            Ok(mut partial_chunks) => {
+                let extracted_partial_chunks = std::mem::take(&mut *partial_chunks);
 
-                        if let Err(e) = tokio::fs::create_dir_all(&blob_share_path).await {
-                            eprintln!("Failed to create directory {:?} for putting chunks: {:?}", blob_share_path, e);
-                            exit(1);
+                for chunk in extracted_partial_chunks {
+                    let mut blob_share_path = target_dir_path.clone();
+
+                    join_handles.spawn(async move {
+                        match chunk.to_bytes() {
+                            Ok(bytes) => {
+                                blob_share_path.push(format!("chunkset.{}", chunk.get_chunkset_id()));
+
+                                if let Err(e) = tokio::fs::create_dir_all(&blob_share_path).await {
+                                    eprintln!("Failed to create directory {:?} for putting chunks: {:?}", blob_share_path, e);
+                                    exit(1);
+                                }
+
+                                blob_share_path.push(format!("share{:02}.data", chunk.get_local_chunk_id()));
+
+                                if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
+                                    eprintln!("Failed to write partial chunk to file {:?}: {:?}", blob_share_path, e);
+                                    exit(1);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to serialize partial chunk with chunk-id {}: {:?}", chunk.get_global_chunk_id(), e);
+                                exit(1);
+                            }
                         }
-
-                        blob_share_path.push(format!("share{:02}.data", chunk.get_local_chunk_id()));
-
-                        if let Err(e) = tokio::fs::write(&blob_share_path, bytes).await {
-                            eprintln!("Failed to write partial chunk to file {:?}: {:?}", blob_share_path, e);
-                            exit(1);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to serialize partial chunk with chunk-id {}: {:?}", chunk.get_global_chunk_id(), e);
-                        exit(1);
-                    }
+                    });
                 }
-            });
+            }
+            Err(_) => {}
         }
 
         if join_handles.len() > max_num_pending_spawned_tasks {
@@ -248,6 +288,10 @@ async fn write_partial_chunks(target_dir_path: PathBuf, mut chunk_rx: tokio::syn
 
                 idx += 1;
             }
+        }
+
+        if has_reached_eof {
+            break;
         }
     }
 
