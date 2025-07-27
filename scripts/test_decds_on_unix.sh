@@ -55,6 +55,48 @@ verify_checksum() {
     fi
 }
 
+# Funtion to flip a bit at a random position in the given file
+flip_random_bit() {
+    local file="$1"
+
+    # Check if file exists and is readable/writable
+    if [[ ! -f "$file" || ! -r "$file" || ! -w "$file" ]]; then
+        echo "Error: File does not exist or is not readable/writable"
+        return 1
+    fi
+
+    # Get file size
+    local size=$(stat -c %s "$file" 2>/dev/null)
+    if [[ -z "$size" || "$size" -eq 0 ]]; then
+        echo "Error: File is empty or size cannot be determined"
+        return 1
+    fi
+
+    # Generate random position (0 to size-1)
+    local pos=$((SRANDOM % size))
+
+    # Generate random bit position (0-7)
+    local bit=$((SRANDOM % 8))
+
+    # Read the byte at the position
+    local byte=$(dd if="$file" bs=1 skip="$pos" count=1 2>/dev/null | od -An -tu1)
+    if [[ -z "$byte" ]]; then
+        echo "Error: Failed to read byte at position $pos"
+        return 1
+    fi
+
+    # Flip the bit using XOR
+    local flipped_byte=$((byte ^ (1 << bit)))
+
+    # Write the modified byte back to the file
+    printf "\\x$(printf %02x $flipped_byte)" | dd of="$file" bs=1 seek="$pos" count=1 conv=notrunc 2>/dev/null
+
+    if [[ $? -ne 0 ]]; then
+        echo "Error: Failed to flip a bit"
+        return 1
+    fi
+}
+
 # Generate random 1GB data blob
 dd if=/dev/urandom of=random.data bs=1M count=1024
 ORIGINAL_HASH=$($SHA256CMD random.data | awk '{print $1}')
@@ -73,31 +115,31 @@ verify_checksum "$ORIGINAL_HASH" "repairing-with-16/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 15 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share00.data bs=1 seek=1 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share00.data"
 time ./target/optimized/decds repair -c broken -o repairing-with-15
 verify_checksum "$ORIGINAL_HASH" "repairing-with-15/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 14 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share02.data bs=1 seek=11 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share02.data"
 time ./target/optimized/decds repair -c broken -o repairing-with-14
 verify_checksum "$ORIGINAL_HASH" "repairing-with-14/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 13 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share04.data bs=1 seek=111 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share04.data"
 time ./target/optimized/decds repair -c broken -o repairing-with-13
 verify_checksum "$ORIGINAL_HASH" "repairing-with-13/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 12 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share15.data bs=1 seek=77 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share15.data"
 time ./target/optimized/decds repair -c broken -o repairing-with-12
 verify_checksum "$ORIGINAL_HASH" "repairing-with-12/repaired.data"
 
 # Mutate a single byte of a proof-carrying chunk belonging to chunkset-15
 # Repairing with 11 valid chunks for chunkset-15 - must work!
-dd if=/dev/urandom of=broken/chunkset.15/share12.data bs=1 seek=175 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share12.data"
 time ./target/optimized/decds repair -c broken -o repairing-with-11
 verify_checksum "$ORIGINAL_HASH" "repairing-with-11/repaired.data"
 
@@ -111,8 +153,8 @@ verify_checksum "$ORIGINAL_HASH" "repairing-with-11/repaired.data"
 
 # Mutate a single byte of two proof-carrying chunks belonging to chunkset-15.
 # Now chunkset-15 should have 9 valid proof-carrying chunks, which should not suffice for recovering that chunkset.
-dd if=/dev/urandom of=broken/chunkset.15/share09.data bs=1 seek=781 count=1 conv=notrunc
-dd if=/dev/urandom of=broken/chunkset.15/share07.data bs=1 seek=223 count=1 conv=notrunc
+flip_random_bit "broken/chunkset.15/share09.data"
+flip_random_bit "broken/chunkset.15/share07.data"
 
 # Now trying to repair, with 9 valid chunks for chunkset-15, it should fail with return code 1, as chunkset-15 can't be recovered.
 time ./target/optimized/decds repair -c broken -o repairing-with-9 | tee console.out; test ${PIPESTATUS[0]} -eq 1
