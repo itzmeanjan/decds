@@ -66,20 +66,21 @@ flip_random_bit() {
     fi
 
     # Get file size
-    local size=$(stat -c %s "$file" 2>/dev/null)
-    if [[ -z "$size" || "$size" -eq 0 ]]; then
-        echo "Error: File is empty or size cannot be determined"
-        return 1
+    local size
+    if [ "$OS" = "Linux" ]; then
+        size=$(stat -c %s "$file" 2>/dev/null)
+    elif [ "$OS" = "Mac" ]; then
+        size=$(stat -f %z "$file" 2>/dev/null)
     fi
 
     # Generate random position (0 to size-1)
-    local pos=$((SRANDOM % size))
+    local pos=$((RANDOM % size))
 
     # Generate random bit position (0-7)
-    local bit=$((SRANDOM % 8))
+    local bit=$((RANDOM % 8))
 
     # Read the byte at the position
-    local byte=$(dd if="$file" bs=1 skip="$pos" count=1 2>/dev/null | od -An -tu1)
+    local byte=$(dd if="$file" bs=1 skip="$pos" count=1 2>/dev/null | od -An -tu1 | tr -d '[:space:]\n')
     if [[ -z "$byte" ]]; then
         echo "Error: Failed to read byte at position $pos"
         return 1
